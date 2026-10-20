@@ -205,8 +205,5 @@ def main():
 
 if __name__ == "__main__":
     main()
-EOF
 
-pkill -f whale_intelligence.py
-nohup python -u whale_intelligence.py > intelligence.log 2>&1 &
 
