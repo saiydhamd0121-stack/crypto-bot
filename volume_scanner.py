@@ -204,7 +204,7 @@ def run_web_server():
     server = HTTPServer(('0.0.0.0', port), SimpleHandler)
     server.serve_forever()
 
-def main()
+def main():
 
     print("=" * 55, flush=True)
     print("🚀 Whale Intelligence Commercial Engine Online...", flush=True)
