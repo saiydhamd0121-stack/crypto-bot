@@ -200,7 +200,7 @@ class SimpleHandler(BaseHTTPRequestHandler):
         self.wfile.write(b"Bot is running 24/7!")
 
 def run_web_server():
-    port = int(os.environ.get("PORT", 8080))
+    port = int(os.environ.get("PORT", 10000))
     server = HTTPServer(('0.0.0.0', port), SimpleHandler)
     server.serve_forever()
 
