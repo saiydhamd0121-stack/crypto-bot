@@ -1,4 +1,4 @@
-cat << 'EOF' > whale_intelligence.py
+
 import time
 import requests
 
