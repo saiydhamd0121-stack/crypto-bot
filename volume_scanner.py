@@ -188,8 +188,20 @@ def process_symbol(symbol: str):
                 send_telegram(FREE_CHANNEL_ID, free_report)
 
             alerted_candles[symbol] = current_time
+class SimpleHandler(BaseHTTPRequestHandler):
+    def do_GET(self):
+        self.send_response(200)
+        self.send_header('Content-type', 'text/plain')
+        self.end_headers()
+        self.wfile.write(b"Bot is running 24/7!")
 
-def main():
+def run_web_server():
+    port = int(os.environ.get("PORT", 8080))
+    server = HTTPServer(('0.0.0.0', port), SimpleHandler)
+    server.serve_forever()
+
+def main()
+
     print("=" * 55, flush=True)
     print("🚀 Whale Intelligence Commercial Engine Online...", flush=True)
     print(f"💼 Binance Pay ID: {BINANCE_PAY_ID}")
