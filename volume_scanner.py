@@ -202,6 +202,7 @@ class SimpleHandler(BaseHTTPRequestHandler):
 def run_web_server():
     port = int(os.environ.get("PORT", 10000))
     server = HTTPServer(('0.0.0.0', port), SimpleHandler)
+    print(f"Server started on port {port}", flush=True)
     server.serve_forever()
 
 def main():
