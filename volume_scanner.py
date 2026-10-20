@@ -3,7 +3,8 @@ import time
 import requests
 import os
 import threading
-from http.server import HTTPServer, BaseHTTPRequestHandler
+from flask import Flask
+
 
 
 # ================= TELEGRAM & CHANNEL CONFIG =================
@@ -192,18 +193,23 @@ def process_symbol(symbol: str):
                 send_telegram(FREE_CHANNEL_ID, free_report)
 
             alerted_candles[symbol] = current_time
-class SimpleHandler(BaseHTTPRequestHandler):
+
     def do_GET(self):
         self.send_response(200)
         self.send_header('Content-type', 'text/plain')
         self.end_headers()
         self.wfile.write(b"Bot is running 24/7!")
 
+app = Flask(__name__)
+
+@app.route('/')
+def home():
+    return "Bot is alive and running 24/7!"
+
 def run_web_server():
     port = int(os.environ.get("PORT", 10000))
-    server = HTTPServer(('0.0.0.0', port), SimpleHandler)
-    print(f"Server started on port {port}", flush=True)
-    server.serve_forever()
+    app.run(host="0.0.0.0", port=port)
+
 
 def main():
 
@@ -220,7 +226,12 @@ def main():
             time.sleep(0.3)
         time.sleep(SLEEP_TIME)
 
+
 if __name__ == "__main__":
+    t = threading.Thread(target=run_web_server)
+    t.daemon = True
+    t.start()
     main()
+
 
 
