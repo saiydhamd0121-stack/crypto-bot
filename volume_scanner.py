@@ -1,237 +1,245 @@
-
-import time
-import requests
 import os
+import sys
+import time
+import math
+import logging
 import threading
+from datetime import datetime
+import requests
 from flask import Flask
 
+# ==============================================================================
+# 1. إعدادات السجلات والنظام (System Logging)
+# ==============================================================================
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(message)s",
+    handlers=[logging.StreamHandler(sys.stdout)]
+)
+logger = logging.getLogger("WhaleScannerVIP")
 
-
-# ================= TELEGRAM & CHANNEL CONFIG =================
-TELEGRAM_BOT_TOKEN = "YOUR_BOT_TOKEN_HERE"
-
-VIP_CHANNEL_ID = "@YOUR_VIP_CHANNEL"
-FREE_CHANNEL_ID = "@YOUR_FREE_CHANNEL"
-
-# Payment and Contact Credentials
-BINANCE_PAY_ID = "1284168199"
-ADMIN_CONTACT = "https://instagram.com/python.automation1"
-
-# Engine Parameters
-INTERVAL = "15m"
-LOOKBACK = 20
-VOLUME_SPIKE_MULT = 2.5
-RSI_PERIOD = 14
-SLEEP_TIME = 60
-
-VIP_WATCHLIST = [
-    "BTCUSDT", "ETHUSDT", "SOLUSDT", "BNBUSDT", 
-    "XRPUSDT", "DOGEUSDT", "ADAUSDT", "AVAXUSDT", 
-    "NEARUSDT", "SUIUSDT", "LINKUSDT", "APTUSDT"
-]
-FREE_SYMBOLS = ["BTCUSDT", "ETHUSDT"]
-
-alerted_candles = {}
-
-def send_telegram(chat_id: str, msg: str):
-    url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
-    payload = {
-        "chat_id": chat_id,
-        "text": msg,
-        "parse_mode": "HTML",
-        "disable_web_page_preview": True
-    }
-    try:
-        r = requests.post(url, json=payload, timeout=10)
-        return r.status_code == 200
-    except Exception as e:
-        print(f"[!] Send error: {e}", flush=True)
-        return False
-
-def get_klines(symbol: str, interval: str, limit: int = 70):
-    url = "https://api.binance.com/api/v3/klines"
-    try:
-        res = requests.get(url, params={"symbol": symbol, "interval": interval, "limit": limit}, timeout=10)
-        if res.status_code == 200:
-            return res.json()
-    except Exception as e:
-        print(f"[!] Fetch error {symbol}: {e}", flush=True)
-    return None
-
-def get_orderbook_pressure(symbol: str):
-    url = "https://api.binance.com/api/v3/depth"
-    try:
-        res = requests.get(url, params={"symbol": symbol, "limit": 50}, timeout=10)
-        if res.status_code == 200:
-            data = res.json()
-            bids_vol = sum(float(b[1]) for b in data.get("bids", []))
-            asks_vol = sum(float(a[1]) for a in data.get("asks", []))
-            total = bids_vol + asks_vol
-            if total > 0:
-                return (bids_vol / total) * 100
-    except:
-        pass
-    return 50.0
-
-def calculate_rsi(closes, period=14):
-    if len(closes) < period + 1:
-        return None
-    gains, losses = [], []
-    for i in range(1, len(closes)):
-        diff = closes[i] - closes[i - 1]
-        gains.append(diff if diff > 0 else 0.0)
-        losses.append(abs(diff) if diff < 0 else 0.0)
-
-    avg_gain = sum(gains[:period]) / period
-    avg_loss = sum(losses[:period]) / period
-
-    for i in range(period, len(gains)):
-        avg_gain = (avg_gain * (period - 1) + gains[i]) / period
-        avg_loss = (avg_loss * (period - 1) + losses[i]) / period
-
-    if avg_loss == 0:
-        return 100.0
-    return 100.0 - (100.0 / (1.0 + (avg_gain / avg_loss)))
-
-def calculate_atr(klines, period=14):
-    if len(klines) < period + 1:
-        return 0.0
-    trs = []
-    for i in range(1, len(klines)):
-        h = float(klines[i][2])
-        l = float(klines[i][3])
-        prev_c = float(klines[i - 1][4])
-        tr = max(h - l, abs(h - prev_c), abs(l - prev_c))
-        trs.append(tr)
-    return sum(trs[-period:]) / period if trs else 0.0
-
-def process_symbol(symbol: str):
-    klines = get_klines(symbol, INTERVAL, limit=60)
-    if not klines or len(klines) < 40:
-        return
-
-    current = klines[-1]
-    prevs = klines[-(LOOKBACK + 1):-1]
-    
-    current_time = current[0]
-    close_price = float(current[4])
-    current_vol = float(current[5])
-
-    avg_vol = sum(float(c[5]) for c in prevs) / len(prevs) if prevs else 1
-    vol_ratio = current_vol / avg_vol if avg_vol > 0 else 0
-
-    closes = [float(k[4]) for k in klines]
-    rsi = calculate_rsi(closes, RSI_PERIOD)
-    if rsi is None:
-        return
-
-    bid_ratio = get_orderbook_pressure(symbol)
-    atr = calculate_atr(klines, 14)
-    if atr == 0:
-        atr = close_price * 0.01
-
-    bullish_setup = (vol_ratio >= VOLUME_SPIKE_MULT) and (rsi <= 35) and (bid_ratio >= 55.0)
-    bearish_setup = (vol_ratio >= VOLUME_SPIKE_MULT) and (rsi >= 65) and (bid_ratio <= 45.0)
-
-    if bullish_setup or bearish_setup:
-        last_alert = alerted_candles.get(symbol)
-        if last_alert != current_time:
-            
-            if bullish_setup:
-                signal_side = "BUY / LONG"
-                sl = close_price - (atr * 1.5)
-                tp1 = close_price + (atr * 1.5)
-                tp2 = close_price + (atr * 3.0)
-                sentiment = f"Bids Dominance ({bid_ratio:.1f}%)"
-            else:
-                signal_side = "SELL / SHORT"
-                sl = close_price + (atr * 1.5)
-                tp1 = close_price - (atr * 1.5)
-                tp2 = close_price - (atr * 3.0)
-                sentiment = f"Asks Dominance ({100 - bid_ratio:.1f}%)"
-
-            # 1. VIP Full Signal
-            vip_report = (
-                f"💎 <b>[VIP ALPHA SIGNAL] High Probability Setup</b>\n"
-                f"━━━━━━━━━━━━━━━━━━━━\n"
-                f"🪙 <b>Pair:</b> #{symbol} | ⏱ <b>Timeframe:</b> {INTERVAL}\n"
-                f"🎯 <b>Action:</b> {signal_side}\n"
-                f"💵 <b>Entry Price:</b> ${close_price:,.4f}\n\n"
-                f"🛡 <b>Stop Loss (SL):</b> ${sl:,.4f}\n"
-                f"🎯 <b>Take Profit 1 (TP1):</b> ${tp1:,.4f}\n"
-                f"🚀 <b>Take Profit 2 (TP2):</b> ${tp2:,.4f}\n\n"
-                f"📊 <b>Market Intelligence:</b>\n"
-                f"• Volume Spike: <b>{vol_ratio:.2f}x</b> | RSI: <b>{rsi:.1f}</b>\n"
-                f"• Depth Pressure: <b>{sentiment}</b>\n"
-                f"━━━━━━━━━━━━━━━━━━━━\n"
-                f"👑 <i>VIP Channel Active. Trade with proper risk management.</i>"
-            )
-
-            # 2. Free Channel Signal (Hidden targets with CTA)
-            free_report = (
-                f"🎁 <b>[FREE TRIAL ALERT - 3 DAYS]</b>\n"
-                f"━━━━━━━━━━━━━━━━━━━━\n"
-                f"🪙 <b>Pair:</b> #{symbol} | ⏱ <b>Timeframe:</b> {INTERVAL}\n"
-                f"🎯 <b>Detected Action:</b> {signal_side}\n"
-                f"⚡️ <b>Unusual Activity:</b> Volume Spike {vol_ratio:.2f}x\n\n"
-                f"🔒 <b>Exact Entry:</b> [LOCKED FOR VIP]\n"
-                f"🔒 <b>Stop Loss (SL):</b> [LOCKED FOR VIP]\n"
-                f"🔒 <b>Targets (TP1 & TP2):</b> [LOCKED FOR VIP]\n"
-                f"━━━━━━━━━━━━━━━━━━━━\n"
-                f"🚀 <b>Unlock full signals & all crypto pairs:</b>\n"
-                f"💳 Instant Binance Pay ID:\n"
-                f"👉 <code>{BINANCE_PAY_ID}</code>\n\n"
-                f"📩 <b>Send payment proof via Instagram:</b>\n"
-                f"{ADMIN_CONTACT}"
-            )
-
-            print(f"[+] Signal triggered for {symbol}...", flush=True)
-
-            send_telegram(VIP_CHANNEL_ID, vip_report)
-
-            if symbol in FREE_SYMBOLS:
-                send_telegram(FREE_CHANNEL_ID, free_report)
-
-            alerted_candles[symbol] = current_time
-
-    def do_GET(self):
-        self.send_response(200)
-        self.send_header('Content-type', 'text/plain')
-        self.end_headers()
-        self.wfile.write(b"Bot is running 24/7!")
-
+# ==============================================================================
+# 2. خادم الويب الداخلي لحماية استضافة Render (24/7 Keep-Alive Server)
+# ==============================================================================
 app = Flask(__name__)
 
 @app.route('/')
-def home():
-    return "Bot is alive and running 24/7!"
+def health_check():
+    return {
+        "status": "online",
+        "service": "Whale Scanner VIP Commercial Engine",
+        "timestamp": datetime.utcnow().isoformat(),
+        "monitored_pairs": 12
+    }, 200
 
-def run_web_server():
+def run_flask_server():
     port = int(os.environ.get("PORT", 10000))
-    app.run(host="0.0.0.0", port=port)
+    logger.info(f"Starting Flask keep-alive server on port {port}")
+    app.run(host="0.0.0.0", port=port, debug=False, use_reloader=False)
 
+# ==============================================================================
+# 3. الثوابت التجارية ومعلومات الاعتماد (Credentials & Monetization Config)
+# ==============================================================================
+TELEGRAM_BOT_TOKEN = "8730034376:AAEKzFHv6LGDj2bFOKHH-FrRLImlSGoSUxA"
+CHANNEL_ID = -1004496384532
+BINANCE_PAY_ID = "1284168199"
+ADMIN_CONTACT = "@python.automation1"
 
-def main():
+BINANCE_KLINES_URL = "https://api.binance.com/api/v3/klines"
+BINANCE_24HR_URL = "https://api.binance.com/api/v3/ticker/24hr"
 
-    print("=" * 55, flush=True)
-    print("🚀 Whale Intelligence Commercial Engine Online...", flush=True)
-    print(f"💼 Binance Pay ID: {BINANCE_PAY_ID}")
-    print(f"📸 Instagram: {ADMIN_CONTACT}")
-    print(f"📊 VIP Assets: {len(VIP_WATCHLIST)} | Free Assets: {len(FREE_SYMBOLS)}")
-    print("=" * 55, flush=True)
+# قائمة الأصول الـ 12 المراقبة باستمرار
+WATCHLIST = [
+    "BTCUSDT", "ETHUSDT", "SOLUSDT", "BNBUSDT", "XRPUSDT",
+    "DOGEUSDT", "ADAUSDT", "AVAXUSDT", "NEARUSDT", "PEPEUSDT",
+    "SUIUSDT", "LINKUSDT"
+]
+
+# معايير خوارزمية الرصد
+VOLUME_THRESHOLD_MULTIPLIER = 2.2      # تضاعف الفوليوم عن المتوسط السابق
+MINIMUM_PRICE_CHANGE_PCT = 0.35        # أقل تغير سعري مطلوب لتأكيد الزخم
+COOLDOWN_PERIOD_SECONDS = 1800         # فترة التهدئة: 30 دقيقة لكل عملة لمنع التكرار
+TIMEFRAME = "15m"                      # الفريم التحليلي الأساسي
+
+# سجل إدارة التهدئة في الذاكرة
+COOLDOWN_TRACKER = {}
+
+# ==============================================================================
+# 4. محرك التيليجرام وإرسال التنبيهات المنمقة (Telegram Messaging Engine)
+# ==============================================================================
+def escape_markdown(text: str) -> str:
+    """تنظيف وتأمين النصوص المتغيرة لمنع تعطل كود التيليجرام"""
+    reserved_chars = ['_', '*', '[', ']', '(', ')', '~', '`', '>', '#', '+', '-', '=', '|', '{', '}', '.', '!']
+    for char in reserved_chars:
+        text = text.replace(char, f"\\{char}")
+    return text
+
+def send_telegram_alert(message_payload: str) -> bool:
+    endpoint = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
+    payload = {
+        "chat_id": CHANNEL_ID,
+        "text": message_payload,
+        "parse_mode": "Markdown",
+        "disable_web_page_preview": True
+    }
+    
+    max_retries = 3
+    for attempt in range(1, max_retries + 1):
+        try:
+            response = requests.post(endpoint, json=payload, timeout=12)
+            if response.status_code == 200:
+                logger.info("Signal broadcasted successfully to the VIP channel.")
+                return True
+            else:
+                logger.warning(f"Telegram API warning (Attempt {attempt}): {response.status_code} - {response.text}")
+        except requests.exceptions.RequestException as err:
+            logger.error(f"Network error communicating with Telegram (Attempt {attempt}): {err}")
+        time.sleep(2)
+        
+    return False
+
+# ==============================================================================
+# 5. محرك تحليل السوق المتقدم (Market Data Processing & Volume Analysis)
+# ==============================================================================
+def fetch_binance_klines(symbol: str, interval: str = "15m", limit: int = 5):
+    params = {"symbol": symbol, "interval": interval, "limit": limit}
+    try:
+        res = requests.get(BINANCE_KLINES_URL, params=params, timeout=10)
+        if res.status_code == 200:
+            return res.json()
+        logger.error(f"Binance Klines API error for {symbol}: Code {res.status_code}")
+    except requests.exceptions.RequestException as e:
+        logger.error(f"Binance connection failed for {symbol}: {e}")
+    return None
+
+def fetch_24hr_context(symbol: str):
+    params = {"symbol": symbol}
+    try:
+        res = requests.get(BINANCE_24HR_URL, params=params, timeout=10)
+        if res.status_code == 200:
+            data = res.json()
+            return {
+                "24h_high": float(data.get("highPrice", 0.0)),
+                "24h_low": float(data.get("lowPrice", 0.0)),
+                "24h_change": float(data.get("priceChangePercent", 0.0))
+            }
+    except Exception as e:
+        logger.error(f"Failed to fetch 24hr stats for {symbol}: {e}")
+    return {"24h_high": 0.0, "24h_low": 0.0, "24h_change": 0.0}
+
+def evaluate_symbol_breakout(symbol: str):
+    now = time.time()
+    
+    # التحقق من نظام التهدئة لمنع إزعاج المشتركين
+    last_alert_time = COOLDOWN_TRACKER.get(symbol, 0)
+    if now - last_alert_time < COOLDOWN_PERIOD_SECONDS:
+        return
+
+    klines = fetch_binance_klines(symbol, interval=TIMEFRAME, limit=4)
+    if not klines or len(klines) < 4:
+        return
+
+    # استخراج بيانات الشموع
+    # klines: [timestamp, open, high, low, close, volume, ...]
+    hist_candle_1 = klines[-4]
+    hist_candle_2 = klines[-3]
+    prev_candle   = klines[-2]
+    curr_candle   = klines[-1]
+
+    # حساب متوسط الفوليوم لآخر 3 شموع سابقة
+    avg_prev_volume = (float(hist_candle_1[5]) + float(hist_candle_2[5]) + float(prev_candle[5])) / 3.0
+    curr_volume = float(curr_candle[5])
+
+    curr_open = float(curr_candle[1])
+    curr_high = float(curr_candle[2])
+    curr_low = float(curr_candle[3])
+    curr_close = float(curr_candle[4])
+
+    if avg_prev_volume <= 0:
+        return
+
+    volume_ratio = curr_volume / avg_prev_volume
+    price_change_pct = ((curr_close - curr_open) / curr_open) * 100.0
+
+    # فلتر الحيتان المزدوج: فوليوم مضاعف + تحرك سعري مؤكد
+    if volume_ratio >= VOLUME_THRESHOLD_MULTIPLIER and abs(price_change_pct) >= MINIMUM_PRICE_CHANGE_PCT:
+        extra_stats = fetch_24hr_context(symbol)
+        
+        # تحديد طبيعة واتجاه الصفقة
+        if curr_close >= curr_open:
+            action_type = "🟢 دخول سيولة تجميعية (BULLISH PUMP)"
+            sentiment_tag = "شراء قوي / تراكم حيتان"
+        else:
+            action_type = "🔴 تصريف وسيولة بيعية (BEARISH DUMP)"
+            sentiment_tag = "ضغط بيعي مكثف / خروج حيتان"
+
+        current_utc = datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S')
+
+        # بناء التقرير بصياغة تجارية احترافية
+        signal_body = (
+            f"🚨 *WHALE VOLUME INJECTION DETECTED* 🚨\n"
+            f"━━━━━━━━━━━━━━━━━━━━━━\n"
+            f"🪙 *الأصل المالي:* `{symbol}`\n"
+            f"📊 *نوع الحركة:* {action_type}\n"
+            f"💵 *السعر الحالي:* `${curr_close:,.4f}`\n"
+            f"📈 *نسبة التغير اللحظي:* `{price_change_pct:+.2f}%`\n"
+            f"🔥 *انفجار السيولة:* `{volume_ratio:.2f}x` أعلى من المعدل\n"
+            f"⏱ *فريم الرصد:* `{TIMEFRAME}`\n"
+            f"━━━━━━━━━━━━━━━━━━━━━━\n"
+            f"📌 *بيانات السوق (24 ساعة):*\n"
+            f"• التغير اليومي: `{extra_stats['24h_change']:+.2f}%`\n"
+            f"• أعلى قمة: `${extra_stats['24h_high']:,.4f}`\n"
+            f"• أدنى قاع: `${extra_stats['24h_low']:,.4f}`\n"
+            f"• حالة التدفق: *{sentiment_tag}*\n"
+            f"━━━━━━━━━━━━━━━━━━━━━━\n"
+            f"💎 *إشارة حصرية بقناة VIP التلقائية*\n"
+            f"💳 لتجديد الاشتراك أو الدفع عبر Binance Pay:\n"
+            f"👉 ID: `{BINANCE_PAY_ID}`\n"
+            f"📩 لتأكيد العمليات والتفعيل: {ADMIN_CONTACT}\n"
+            f"🕒 توقيت الرصد: `{current_utc} UTC`"
+        )
+
+        success = send_telegram_alert(signal_body)
+        if success:
+            COOLDOWN_TRACKER[symbol] = now
+            logger.info(f"Signal confirmed and locked under cooldown for {symbol}")
+
+# ==============================================================================
+# 6. المحرك الأساسي وجدولة المسح الدائم (Execution Loop)
+# ==============================================================================
+def start_continuous_scanner():
+    logger.info("=" * 65)
+    logger.info("🚀 Whale Scanner Commercial Engine Initiated Successfully")
+    logger.info(f"💼 Binance Pay Revenue ID: {BINANCE_PAY_ID}")
+    logger.info(f"📢 Broadcast Target Channel: {CHANNEL_ID}")
+    logger.info(f"🔎 Actively monitoring {len(WATCHLIST)} major crypto pairs")
+    logger.info("=" * 65)
 
     while True:
-        for symbol in VIP_WATCHLIST:
-            process_symbol(symbol)
-            time.sleep(0.3)
-        time.sleep(SLEEP_TIME)
+        try:
+            for pair in WATCHLIST:
+                evaluate_symbol_breakout(pair)
+                # تأخير زمني محسوب لتفادي حظر Binance IP والحفاظ على كفاءة الخادم
+                time.sleep(0.5)
 
+            # استراحة بين كل جولة مسح شاملة
+            time.sleep(25)
 
+        except Exception as global_err:
+            logger.critical(f"Unexpected runtime exception in main loop: {global_err}", exc_info=True)
+            time.sleep(10)
+
+# ==============================================================================
+# 7. نقطة الانطلاق (Entry Point)
+# ==============================================================================
 if __name__ == "__main__":
-    t = threading.Thread(target=run_web_server)
-    t.daemon = True
-    t.start()
-    main()
+    # تشغيل خادم الويب في Thread مستقل لمنع تعليق الكود
+    server_thread = threading.Thread(target=run_flask_server, daemon=True)
+    server_thread.start()
+
+    # تشغيل محرك الرصد الرئيسي
+    start_continuous_scanner()
+
 
 
 
