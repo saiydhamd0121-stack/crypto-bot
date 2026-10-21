@@ -21,8 +21,7 @@ logger = logging.getLogger("WhaleScannerVIP")
 # ==============================================================================
 # 2. الثوابت وإعدادات القنوات والترويج (Channels & Monetization Config)
 # ==============================================================================
-TELEGRAM_BOT_TOKEN = "8800024044:AAGHh6000pqKWM5iuf7jM7C75_o-n8oEFKs"
-
+TELEGRAM_BOT_TOKEN = "8730034376:AAHnBrqKjyuICdw69mHbszrbi0MFyMcNVGo"
 
 VIP_CHANNEL_ID = -1004496384532               # القناة الخاصة للمشتركين
 PUBLIC_PROMO_CHANNEL = "@WhaleScanner_Alerts"  # القناة العامة لجلب الزبائن والترويج
