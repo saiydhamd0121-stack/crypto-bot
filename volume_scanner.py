@@ -19,10 +19,11 @@ logging.basicConfig(
 logger = logging.getLogger("WhaleScannerVIP")
 
 # ==============================================================================
-# 2. الثوابت التجارية ومعلومات الاعتماد (Commercial Credentials & Config)
+# 2. الثوابت وإعدادات القنوات والترويج (Channels & Monetization Config)
 # ==============================================================================
 TELEGRAM_BOT_TOKEN = "8730034376:AAEKzFHv6LGDj2bFOKHH-FrRLImlSGoSUxA"
-CHANNEL_ID = -1004496384532
+VIP_CHANNEL_ID = -1004496384532               # القناة الخاصة للمشتركين
+PUBLIC_PROMO_CHANNEL = "@WhaleScanner_Alerts"  # القناة العامة لجلب الزبائن والترويج
 BINANCE_PAY_ID = "1284168199"
 ADMIN_CONTACT = "@python.automation1"
 SUBSCRIPTION_PRICE = "30 USDT"
@@ -30,23 +31,22 @@ SUBSCRIPTION_PRICE = "30 USDT"
 BINANCE_KLINES_URL = "https://api.binance.com/api/v3/klines"
 BINANCE_24HR_URL = "https://api.binance.com/api/v3/ticker/24hr"
 
-# قائمة الأصول الـ 12 المراقبة باستمرار
+# قائمة الأصول المراقبة
 WATCHLIST = [
     "BTCUSDT", "ETHUSDT", "SOLUSDT", "BNBUSDT", "XRPUSDT",
     "DOGEUSDT", "ADAUSDT", "AVAXUSDT", "NEARUSDT", "PEPEUSDT",
     "SUIUSDT", "LINKUSDT"
 ]
 
-# معايير خوارزمية الرصد
-VOLUME_THRESHOLD_MULTIPLIER = 2.2      # تضاعف الفوليوم عن المتوسط السابق
-MINIMUM_PRICE_CHANGE_PCT = 0.35        # أقل تغير سعري مطلوب لتأكيد الزخم
-COOLDOWN_PERIOD_SECONDS = 1800         # فترة التهدئة: 30 دقيقة لكل عملة لمنع التكرار
-TIMEFRAME = "15m"                      # الفريم التحليلي الأساسي
+VOLUME_THRESHOLD_MULTIPLIER = 2.2
+MINIMUM_PRICE_CHANGE_PCT = 0.35
+COOLDOWN_PERIOD_SECONDS = 1800
+TIMEFRAME = "15m"
 
 COOLDOWN_TRACKER = {}
 
 # ==============================================================================
-# 3. واجهة الشراء والترويج العالمية (Commercial Web Landing & Checkout)
+# 3. واجهة الشراء والترويج (Commercial Web Landing & Checkout)
 # ==============================================================================
 app = Flask(__name__)
 
@@ -87,7 +87,7 @@ HTML_TEMPLATE = """
     <div class="card">
         <div class="badge">Live 24/7 Whale Engine</div>
         <h1>Whale Radar VIP</h1>
-        <p class="subtitle">Real-time volume breakout scanner tracking institutional whale orders with instant Take-Profit & Stop-Loss targets.</p>
+        <p class="subtitle">Institutional volume breakout scanner tracking whale entries with automated Take-Profit & Stop-Loss targets.</p>
         
         <div class="features">
             <div class="feature-item"><span>✓</span> 15m Institutional Volume Breakout Detection</div>
@@ -98,7 +98,7 @@ HTML_TEMPLATE = """
 
         <div class="price-box">
             <div class="price">30 USDT</div>
-            <div class="price-period">Monthly Full Access Pass</div>
+            <div class="price-period">Monthly VIP Access</div>
         </div>
 
         <div class="pay-box">
@@ -113,7 +113,7 @@ HTML_TEMPLATE = """
             </div>
             <div class="form-group">
                 <label>Binance Pay Transaction ID / Order ID</label>
-                <input type="text" id="tx_id" placeholder="Transaction or Order ID" required>
+                <input type="text" id="tx_id" placeholder="Transaction ID" required>
             </div>
             <button type="submit">Verify Payment & Join VIP</button>
         </form>
@@ -144,11 +144,11 @@ HTML_TEMPLATE = """
                 msg.style.display = 'block';
                 if(data.success) {
                     msg.style.color = '#00d26a';
-                    msg.innerHTML = "✅ Verification submitted! Our engine is verifying your Binance transaction. You will be activated shortly.";
+                    msg.innerHTML = "✅ Verification submitted! Our engine is verifying your payment. Access will be activated shortly.";
                     document.getElementById('checkoutForm').reset();
                 } else {
                     msg.style.color = '#ff4d4d';
-                    msg.innerHTML = "❌ " + (data.error || "Submission failed. Please contact support.");
+                    msg.innerHTML = "❌ " + (data.error || "Submission failed.");
                 }
             } catch(err) {
                 msg.style.display = 'block';
@@ -187,7 +187,7 @@ def verify_payment():
         f"━━━━━━━━━━━━━━━━━━━━━━\n"
         f"👉 Please verify in your Binance app and grant access."
     )
-    send_telegram_alert(admin_alert)
+    send_telegram_msg(VIP_CHANNEL_ID, admin_alert)
     return jsonify({"success": True, "message": "Verification received"}), 200
 
 def run_flask_server():
@@ -196,12 +196,12 @@ def run_flask_server():
     app.run(host="0.0.0.0", port=port, debug=False, use_reloader=False)
 
 # ==============================================================================
-# 4. محرك التيليجرام (Telegram Broadcast Engine)
+# 4. محرك التيليجرام والنشر (Broadcast & Promo Engine)
 # ==============================================================================
-def send_telegram_alert(message_payload: str) -> bool:
+def send_telegram_msg(target_chat, message_payload: str) -> bool:
     endpoint = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
     payload = {
-        "chat_id": CHANNEL_ID,
+        "chat_id": target_chat,
         "text": message_payload,
         "parse_mode": "Markdown",
         "disable_web_page_preview": True
@@ -210,16 +210,15 @@ def send_telegram_alert(message_payload: str) -> bool:
         try:
             res = requests.post(endpoint, json=payload, timeout=12)
             if res.status_code == 200:
-                logger.info("Signal broadcasted successfully.")
                 return True
-            logger.warning(f"Telegram API warning (Attempt {attempt}): {res.status_code} - {res.text}")
+            logger.warning(f"Telegram API response for {target_chat}: {res.status_code} - {res.text}")
         except Exception as err:
-            logger.error(f"Network error communicating with Telegram: {err}")
+            logger.error(f"Error sending message to {target_chat}: {err}")
         time.sleep(2)
     return False
 
 # ==============================================================================
-# 5. محرك الحسابات الفنية والذكاء المالي (Technical Analysis & RSI Engine)
+# 5. محرك التحليل الفني ومؤشر RSI (Technical Analysis Engine)
 # ==============================================================================
 def calculate_rsi(klines, period=14):
     if len(klines) < period + 1:
@@ -277,7 +276,6 @@ def evaluate_symbol_breakout(symbol: str):
     if not klines or len(klines) < 16:
         return
 
-    # حساب مؤشر RSI 14
     rsi_value = calculate_rsi(klines, period=14)
 
     curr_candle = klines[-1]
@@ -301,78 +299,93 @@ def evaluate_symbol_breakout(symbol: str):
         extra_stats = fetch_24hr_context(symbol)
         current_utc = datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S')
 
-        # حساب الأهداف ووقف الخسارة الجاهزة للتنفيذ
+        # 1. حساب أهداف الصفقة
         if curr_close >= curr_open:
             action_type = "🟢 صفقة شراء / صعود حيتان (LONG PUMP)"
+            promo_action = "🟢 BULLISH WHALE INFLOW"
             sentiment_tag = "تجميع مؤسساتي قوي"
-            tp1 = curr_close * 1.015   # +1.5%
-            tp2 = curr_close * 1.030   # +3.0%
-            sl  = curr_close * 0.988   # -1.2%
+            tp1 = curr_close * 1.015
+            tp2 = curr_close * 1.030
+            sl  = curr_close * 0.988
         else:
             action_type = "🔴 صفقة بيع / تصريف حيتان (SHORT DUMP)"
+            promo_action = "🔴 BEARISH WHALE OUTFLOW"
             sentiment_tag = "ضغط تصريف بيعي"
-            tp1 = curr_close * 0.985   # -1.5%
-            tp2 = curr_close * 0.970   # -3.0%
-            sl  = curr_close * 1.012   # +1.2%
+            tp1 = curr_close * 0.985
+            tp2 = curr_close * 0.970
+            sl  = curr_close * 1.012
 
-        signal_body = (
+        # 2. الإشارة الكاملة لقناة المشتركين VIP
+        vip_signal = (
             f"🚨 *WHALE VOLUME INJECTION DETECTED* 🚨\n"
             f"━━━━━━━━━━━━━━━━━━━━━━\n"
             f"🪙 *العملة:* `#{symbol}`\n"
             f"📊 *نوع الصفقة:* {action_type}\n"
-            f"💵 *سعر الدخول الحالي:* `${curr_close:,.4f}`\n"
+            f"💵 *سعر الدخول:* `${curr_close:,.4f}`\n"
             f"📈 *تغير الشمعة:* `{price_change_pct:+.2f}%`\n"
-            f"🔥 *قوة انفجار الفوليوم:* `{volume_ratio:.2f}x` أضعاف المعدل\n"
-            f"⚡ *مؤشر الزخم RSI (14):* `{rsi_value}`\n"
-            f"⏱ *فريم التحليل:* `{TIMEFRAME}`\n"
+            f"🔥 *الفوليوم:* `{volume_ratio:.2f}x` أضعاف المعدل\n"
+            f"⚡ *مؤشر RSI:* `{rsi_value}`\n"
+            f"⏱ *الفريم:* `{TIMEFRAME}`\n"
             f"━━━━━━━━━━━━━━━━━━━━━━\n"
-            f"🎯 *خطة التداول المقترحة (Targets):*\n"
-            f"• الهدف الأول (TP1): `${tp1:,.4f}`\n"
-            f"• الهدف الثاني (TP2): `${tp2:,.4f}`\n"
-            f"• وقف الخسارة (Stop Loss): `${sl:,.4f}`\n"
+            f"🎯 *خطة التداول المعتمدة:*\n"
+            f"• Target 1: `${tp1:,.4f}`\n"
+            f"• Target 2: `${tp2:,.4f}`\n"
+            f"• Stop Loss: `${sl:,.4f}`\n"
             f"━━━━━━━━━━━━━━━━━━━━━━\n"
-            f"📌 *سياق الـ 24 ساعة الماضية:*\n"
+            f"📌 *سياق السوق 24h:*\n"
             f"• تغير اليوم: `{extra_stats['24h_change']:+.2f}%`\n"
-            f"• أعلى قمة: `${extra_stats['24h_high']:,.4f}`\n"
-            f"• أدنى قاع: `${extra_stats['24h_low']:,.4f}`\n"
-            f"• قراءة التدفق: *{sentiment_tag}*\n"
+            f"• الحالة: *{sentiment_tag}*\n"
             f"━━━━━━━━━━━━━━━━━━━━━━\n"
-            f"💎 *اشتراك رادار الحيتان VIP:*\n"
-            f"💰 السعر: `{SUBSCRIPTION_PRICE}` / شهرياً\n"
-            f"💳 الدفع المباشر عبر Binance Pay ID:\n"
-            f"👉 `{BINANCE_PAY_ID}`\n"
-            f"📩 الدعم والتفعيل: {ADMIN_CONTACT}\n"
-            f"🕒 التوقيت: `{current_utc} UTC`"
+            f"💎 *Whale Radar VIP Engine*\n"
+            f"💰 الاشتراك: `{SUBSCRIPTION_PRICE}` / شهر\n"
+            f"💳 Binance Pay ID: `{BINANCE_PAY_ID}`\n"
+            f"🕒 `{current_utc} UTC`"
         )
 
-        success = send_telegram_alert(signal_body)
-        if success:
+        # 3. المنشور الترويجي العالمي للقناة العامة (لجلب الزبائن)
+        promo_signal = (
+            f"🚨 *INSTITUTIONAL WHALE ALERT* 🚨\n\n"
+            f"🪙 Asset: *${symbol.replace('USDT', '')}*\n"
+            f"⚡ Action: *{promo_action}*\n"
+            f"📈 Price Change: `{price_change_pct:+.2f}%` in 15m\n"
+            f"🔥 Volume Spike: `{volume_ratio:.2f}x` above average!\n\n"
+            f"🔒 *Target 1, Target 2 & Stop-Loss are unlocked for VIP Members only.*\n\n"
+            f"💎 Join VIP to get complete entry/exit levels & live tracking:\n"
+            f"👉 Subscription: *{SUBSCRIPTION_PRICE}* via Binance Pay ID `{BINANCE_PAY_ID}`\n"
+            f"📩 Contact to join: {ADMIN_CONTACT}\n\n"
+            f"#Crypto #WhaleAlert #Binance #{symbol.replace('USDT', '')}"
+        )
+
+        # الإرسال المتزامن لكلا القناتين
+        vip_sent = send_telegram_msg(VIP_CHANNEL_ID, vip_signal)
+        promo_sent = send_telegram_msg(PUBLIC_PROMO_CHANNEL, promo_signal)
+
+        if vip_sent or promo_sent:
             COOLDOWN_TRACKER[symbol] = now
-            logger.info(f"Signal confirmed and locked for {symbol}")
+            logger.info(f"Signal and global promo broadcasted for {symbol}")
 
 # ==============================================================================
 # 6. المحرك الأساسي وجدولة المسح الدائم (Execution Loop)
 # ==============================================================================
 def start_continuous_scanner():
     logger.info("=" * 65)
-    logger.info("🚀 Whale Scanner Commercial Engine Initiated Successfully")
+    logger.info("🚀 Whale Scanner Commercial Engine Initiated")
     logger.info(f"💼 Binance Pay Revenue ID: {BINANCE_PAY_ID}")
     logger.info(f"💲 Monthly Subscription Rate: {SUBSCRIPTION_PRICE}")
-    logger.info(f"📢 Target Channel: {CHANNEL_ID}")
-    logger.info(f"🔎 Monitoring {len(WATCHLIST)} pairs with RSI & TP/SL Engines")
+    logger.info(f"📢 VIP Target: {VIP_CHANNEL_ID}")
+    logger.info(f"🌍 Public Global Promo: {PUBLIC_PROMO_CHANNEL}")
     logger.info("=" * 65)
 
-    # رسالة إطلاق تجريبية فورية تؤكد وصول التحديث
-    startup_msg = (
-        "🟢 *تم تحديث رادار الحيتان إلى الإصدار الاحترافي المؤسساتي!*\n\n"
-        "✨ *المزايا الجديدة المفعلة:*\n"
-        "• حساب أهداف الأرباح التلقائية (TP1 & TP2).\n"
-        "• تحديد وقف الخسارة الصارم (Stop Loss).\n"
-        "• مؤشر القوة النسبية RSI 14 لرصد التشبع.\n"
-        f"💰 سعر الاشتراك: `{SUBSCRIPTION_PRICE}` شهرياً.\n"
-        f"💳 الدفع المباشر عبر Binance Pay ID: `{BINANCE_PAY_ID}`"
+    # رسالة إطلاق تجريبية فورية للقناة العامة
+    promo_welcome = (
+        "🟢 *Whale Radar Free Alerts is officially LIVE!*\n\n"
+        "📡 Tracking institutional volume spikes across Binance 24/7.\n"
+        "⚡ Signals will be posted here automatically.\n\n"
+        "💎 For complete TP/SL targets & VIP community:\n"
+        f"👉 Monthly pass: *{SUBSCRIPTION_PRICE}* via Binance Pay ID `{BINANCE_PAY_ID}`\n"
+        f"📩 Support: {ADMIN_CONTACT}"
     )
-    send_telegram_alert(startup_msg)
+    send_telegram_msg(PUBLIC_PROMO_CHANNEL, promo_welcome)
 
     while True:
         try:
@@ -393,5 +406,6 @@ if __name__ == "__main__":
     server_thread = threading.Thread(target=run_flask_server, daemon=True)
     server_thread.start()
     start_continuous_scanner()
+
 
 
