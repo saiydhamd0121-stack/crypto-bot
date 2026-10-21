@@ -19,20 +19,27 @@ logging.basicConfig(
 logger = logging.getLogger("WhaleScannerVIP")
 
 # ==============================================================================
-# 2. الثوابت وإعدادات القنوات والترويج (Channels & Monetization Config)
+# 2. الثوابت وإعدادات البوتات والقنوات والواتساب
 # ==============================================================================
-TELEGRAM_BOT_TOKEN = "8730034376:AAHnBrqKjyuICdw69mHbszrbi0MFyMcNVGo"
+BOT_TOKENS = [
+    "8730034376:AAHnBrqKjyuICdw69mHbszrbi0MFyMcNVGo",
+    "8800024044:AAGHh6000pqKWM5iuf7jM7C75_o-n8oEFKs"
+]
 
-VIP_CHANNEL_ID = -1004496384532               # القناة الخاصة للمشتركين
-PUBLIC_PROMO_CHANNEL = "@WhaleScanner_Alerts"  # القناة العامة لجلب الزبائن والترويج
+VIP_CHANNEL_ID = -1004496384532
+PUBLIC_PROMO_CHANNEL = "@WhaleScanner_Alerts"
 BINANCE_PAY_ID = "1284168199"
 ADMIN_CONTACT = "@python.automation1"
+
+# استبدل هذا الرقم برقم هاتفك مع رمز الدولة (بدون علامة + أو مسافات، مثال: 249912345678)
+WHATSAPP_NUMBER = "YOUR_PHONE_NUMBER"
+WHATSAPP_LINK = f"https://wa.me/{WHATSAPP_NUMBER}"
+
 SUBSCRIPTION_PRICE = "30 USDT"
 
 BINANCE_KLINES_URL = "https://api.binance.com/api/v3/klines"
 BINANCE_24HR_URL = "https://api.binance.com/api/v3/ticker/24hr"
 
-# قائمة الأصول المراقبة
 WATCHLIST = [
     "BTCUSDT", "ETHUSDT", "SOLUSDT", "BNBUSDT", "XRPUSDT",
     "DOGEUSDT", "ADAUSDT", "AVAXUSDT", "NEARUSDT", "PEPEUSDT",
@@ -72,9 +79,10 @@ HTML_TEMPLATE = """
         .price-box { text-align: center; margin-bottom: 24px; }
         .price { font-size: 38px; font-weight: 800; color: #f0b90b; }
         .price-period { color: #8da2c0; font-size: 14px; }
-        .pay-box { background: #1a253d; border-radius: 10px; padding: 16px; margin-bottom: 24px; text-align: center; border: 1px dashed #f0b90b; }
+        .pay-box { background: #1a253d; border-radius: 10px; padding: 16px; margin-bottom: 20px; text-align: center; border: 1px dashed #f0b90b; }
         .pay-label { font-size: 12px; color: #8da2c0; text-transform: uppercase; margin-bottom: 6px; }
         .pay-id { font-size: 20px; font-weight: 700; color: #ffffff; letter-spacing: 1px; }
+        .whatsapp-btn { display: block; width: 100%; padding: 12px; background: #25d366; color: #ffffff; font-weight: 700; text-align: center; text-decoration: none; border-radius: 8px; margin-bottom: 20px; }
         .form-group { margin-bottom: 16px; text-align: left; }
         label { display: block; font-size: 13px; color: #8da2c0; margin-bottom: 6px; }
         input { width: 100%; padding: 12px; background: #0c1220; border: 1px solid #233352; border-radius: 8px; color: #fff; font-size: 14px; }
@@ -107,10 +115,12 @@ HTML_TEMPLATE = """
             <div class="pay-id">1284168199</div>
         </div>
 
+        <a href="{{ wa_link }}" target="_blank" class="whatsapp-btn">💬 Chat directly via WhatsApp</a>
+
         <form id="checkoutForm">
             <div class="form-group">
-                <label>Telegram Username (e.g. @yourhandle)</label>
-                <input type="text" id="tg_username" placeholder="@username" required>
+                <label>Telegram / WhatsApp Username</label>
+                <input type="text" id="tg_username" placeholder="@username or Phone" required>
             </div>
             <div class="form-group">
                 <label>Binance Pay Transaction ID / Order ID</label>
@@ -167,7 +177,7 @@ HTML_TEMPLATE = """
 
 @app.route('/')
 def home():
-    return render_template_string(HTML_TEMPLATE)
+    return render_template_string(HTML_TEMPLATE, wa_link=WHATSAPP_LINK)
 
 @app.route('/api/verify', methods=['POST'])
 def verify_payment():
@@ -176,7 +186,7 @@ def verify_payment():
     tx_id = data.get('txid', '').strip()
 
     if not tg_user or not tx_id:
-        return jsonify({"success": False, "error": "Missing Telegram username or Transaction ID"}), 400
+        return jsonify({"success": False, "error": "Missing Contact or Transaction ID"}), 400
 
     admin_alert = (
         f"💰 *NEW SUBSCRIPTION PAYMENT SUBMITTED*\n"
@@ -197,29 +207,30 @@ def run_flask_server():
     app.run(host="0.0.0.0", port=port, debug=False, use_reloader=False)
 
 # ==============================================================================
-# 4. محرك التيليجرام والنشر (Broadcast & Promo Engine)
+# 4. محرك التيليجرام الذكي الداعم للبوتين معاً (Smart Dual-Bot Sender)
 # ==============================================================================
 def send_telegram_msg(target_chat, message_payload: str) -> bool:
-    endpoint = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
     payload = {
         "chat_id": target_chat,
         "text": message_payload,
         "parse_mode": "Markdown",
         "disable_web_page_preview": True
     }
-    for attempt in range(1, 4):
+    
+    for token in BOT_TOKENS:
+        endpoint = f"https://api.telegram.org/bot{token}/sendMessage"
         try:
-            res = requests.post(endpoint, json=payload, timeout=12)
+            res = requests.post(endpoint, json=payload, timeout=10)
             if res.status_code == 200:
                 return True
-            logger.warning(f"Telegram API response for {target_chat}: {res.status_code} - {res.text}")
+            logger.warning(f"Telegram API response for token {token[:12]}... on chat {target_chat}: {res.status_code} - {res.text}")
         except Exception as err:
-            logger.error(f"Error sending message to {target_chat}: {err}")
-        time.sleep(2)
+            logger.error(f"Error connecting with token {token[:12]}...: {err}")
+            
     return False
 
 # ==============================================================================
-# 5. محرك التحليل الفني ومؤشر RSI (Technical Analysis Engine)
+# 5. محرك التحليل الفني ومؤشر RSI
 # ==============================================================================
 def calculate_rsi(klines, period=14):
     if len(klines) < period + 1:
@@ -300,7 +311,6 @@ def evaluate_symbol_breakout(symbol: str):
         extra_stats = fetch_24hr_context(symbol)
         current_utc = datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S')
 
-        # 1. حساب أهداف الصفقة
         if curr_close >= curr_open:
             action_type = "🟢 صفقة شراء / صعود حيتان (LONG PUMP)"
             promo_action = "🟢 BULLISH WHALE INFLOW"
@@ -316,7 +326,6 @@ def evaluate_symbol_breakout(symbol: str):
             tp2 = curr_close * 0.970
             sl  = curr_close * 1.012
 
-        # 2. الإشارة الكاملة لقناة المشتركين VIP
         vip_signal = (
             f"🚨 *WHALE VOLUME INJECTION DETECTED* 🚨\n"
             f"━━━━━━━━━━━━━━━━━━━━━━\n"
@@ -340,10 +349,10 @@ def evaluate_symbol_breakout(symbol: str):
             f"💎 *Whale Radar VIP Engine*\n"
             f"💰 الاشتراك: `{SUBSCRIPTION_PRICE}` / شهر\n"
             f"💳 Binance Pay ID: `{BINANCE_PAY_ID}`\n"
+            f"💬 WhatsApp: {WHATSAPP_LINK}\n"
             f"🕒 `{current_utc} UTC`"
         )
 
-        # 3. المنشور الترويجي العالمي للقناة العامة (لجلب الزبائن)
         promo_signal = (
             f"🚨 *INSTITUTIONAL WHALE ALERT* 🚨\n\n"
             f"🪙 Asset: *${symbol.replace('USDT', '')}*\n"
@@ -353,7 +362,8 @@ def evaluate_symbol_breakout(symbol: str):
             f"🔒 *Target 1, Target 2 & Stop-Loss are unlocked for VIP Members only.*\n\n"
             f"💎 Join VIP to get complete entry/exit levels & live tracking:\n"
             f"👉 Subscription: *{SUBSCRIPTION_PRICE}* via Binance Pay ID `{BINANCE_PAY_ID}`\n"
-            f"📩 Contact to join: {ADMIN_CONTACT}\n\n"
+            f"💬 WhatsApp Direct: {WHATSAPP_LINK}\n"
+            f"📩 Telegram Support: {ADMIN_CONTACT}\n\n"
             f"#Crypto #WhaleAlert #Binance #{symbol.replace('USDT', '')}"
         )
 
@@ -369,23 +379,10 @@ def evaluate_symbol_breakout(symbol: str):
 # ==============================================================================
 def start_continuous_scanner():
     logger.info("=" * 65)
-    logger.info("🚀 Whale Scanner Commercial Engine Initiated")
+    logger.info("🚀 Whale Scanner Commercial Engine Initiated (Dual-Bot Engine)")
     logger.info(f"💼 Binance Pay Revenue ID: {BINANCE_PAY_ID}")
-    logger.info(f"💲 Monthly Subscription Rate: {SUBSCRIPTION_PRICE}")
-    logger.info(f"📢 VIP Target: {VIP_CHANNEL_ID}")
-    logger.info(f"🌍 Public Global Promo: {PUBLIC_PROMO_CHANNEL}")
+    logger.info(f"💬 WhatsApp Direct Link: {WHATSAPP_LINK}")
     logger.info("=" * 65)
-
-    # رسالة إطلاق تجريبية فورية للقناة العامة
-    promo_welcome = (
-        "🟢 *Whale Radar Free Alerts is officially LIVE!*\n\n"
-        "📡 Tracking institutional volume spikes across Binance 24/7.\n"
-        "⚡ Signals will be posted here automatically.\n\n"
-        "💎 For complete TP/SL targets & VIP community:\n"
-        f"👉 Monthly pass: *{SUBSCRIPTION_PRICE}* via Binance Pay ID `{BINANCE_PAY_ID}`\n"
-        f"📩 Support: {ADMIN_CONTACT}"
-    )
-    send_telegram_msg(PUBLIC_PROMO_CHANNEL, promo_welcome)
 
     while True:
         try:
