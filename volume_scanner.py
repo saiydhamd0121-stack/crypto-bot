@@ -1,3 +1,4 @@
+
 import os
 import sys
 import time
@@ -44,6 +45,7 @@ TELEGRAM_BOT_TOKEN = "8730034376:AAEKzFHv6LGDj2bFOKHH-FrRLImlSGoSUxA"
 CHANNEL_ID = -1004496384532
 BINANCE_PAY_ID = "1284168199"
 ADMIN_CONTACT = "@python.automation1"
+SUBSCRIPTION_PRICE = "30 USDT"
 
 BINANCE_KLINES_URL = "https://api.binance.com/api/v3/klines"
 BINANCE_24HR_URL = "https://api.binance.com/api/v3/ticker/24hr"
@@ -67,13 +69,6 @@ COOLDOWN_TRACKER = {}
 # ==============================================================================
 # 4. محرك التيليجرام وإرسال التنبيهات المنمقة (Telegram Messaging Engine)
 # ==============================================================================
-def escape_markdown(text: str) -> str:
-    """تنظيف وتأمين النصوص المتغيرة لمنع تعطل كود التيليجرام"""
-    reserved_chars = ['_', '*', '[', ']', '(', ')', '~', '`', '>', '#', '+', '-', '=', '|', '{', '}', '.', '!']
-    for char in reserved_chars:
-        text = text.replace(char, f"\\{char}")
-    return text
-
 def send_telegram_alert(message_payload: str) -> bool:
     endpoint = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
     payload = {
@@ -140,7 +135,6 @@ def evaluate_symbol_breakout(symbol: str):
         return
 
     # استخراج بيانات الشموع
-    # klines: [timestamp, open, high, low, close, volume, ...]
     hist_candle_1 = klines[-4]
     hist_candle_2 = klines[-3]
     prev_candle   = klines[-2]
@@ -175,7 +169,7 @@ def evaluate_symbol_breakout(symbol: str):
 
         current_utc = datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S')
 
-        # بناء التقرير بصياغة تجارية احترافية
+        # بناء التقرير مع إظهار سعر الاشتراك الثابت
         signal_body = (
             f"🚨 *WHALE VOLUME INJECTION DETECTED* 🚨\n"
             f"━━━━━━━━━━━━━━━━━━━━━━\n"
@@ -193,9 +187,10 @@ def evaluate_symbol_breakout(symbol: str):
             f"• حالة التدفق: *{sentiment_tag}*\n"
             f"━━━━━━━━━━━━━━━━━━━━━━\n"
             f"💎 *إشارة حصرية بقناة VIP التلقائية*\n"
-            f"💳 لتجديد الاشتراك أو الدفع عبر Binance Pay:\n"
+            f"💰 *الاشتراك الشهري:* `{SUBSCRIPTION_PRICE}` / شهر\n"
+            f"💳 للدفع المباشر عبر Binance Pay:\n"
             f"👉 ID: `{BINANCE_PAY_ID}`\n"
-            f"📩 لتأكيد العمليات والتفعيل: {ADMIN_CONTACT}\n"
+            f"📩 لتأكيد الدفع والتفعيل: {ADMIN_CONTACT}\n"
             f"🕒 توقيت الرصد: `{current_utc} UTC`"
         )
 
@@ -211,6 +206,7 @@ def start_continuous_scanner():
     logger.info("=" * 65)
     logger.info("🚀 Whale Scanner Commercial Engine Initiated Successfully")
     logger.info(f"💼 Binance Pay Revenue ID: {BINANCE_PAY_ID}")
+    logger.info(f"💲 Monthly Subscription Rate: {SUBSCRIPTION_PRICE}")
     logger.info(f"📢 Broadcast Target Channel: {CHANNEL_ID}")
     logger.info(f"🔎 Actively monitoring {len(WATCHLIST)} major crypto pairs")
     logger.info("=" * 65)
@@ -219,10 +215,8 @@ def start_continuous_scanner():
         try:
             for pair in WATCHLIST:
                 evaluate_symbol_breakout(pair)
-                # تأخير زمني محسوب لتفادي حظر Binance IP والحفاظ على كفاءة الخادم
                 time.sleep(0.5)
 
-            # استراحة بين كل جولة مسح شاملة
             time.sleep(25)
 
         except Exception as global_err:
@@ -233,13 +227,9 @@ def start_continuous_scanner():
 # 7. نقطة الانطلاق (Entry Point)
 # ==============================================================================
 if __name__ == "__main__":
-    # تشغيل خادم الويب في Thread مستقل لمنع تعليق الكود
     server_thread = threading.Thread(target=run_flask_server, daemon=True)
     server_thread.start()
-
-    # تشغيل محرك الرصد الرئيسي
     start_continuous_scanner()
-
 
 
 
