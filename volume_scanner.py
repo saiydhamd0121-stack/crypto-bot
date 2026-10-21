@@ -32,7 +32,7 @@ BINANCE_PAY_ID = "1284168199"
 ADMIN_CONTACT = "@python.automation1"
 
 # استبدل هذا الرقم برقم هاتفك مع رمز الدولة (بدون علامة + أو مسافات، مثال: 249912345678)
-WHATSAPP_NUMBER = "YOUR_PHONE_NUMBER"
+WHATSAPP_NUMBER = "249119806108"
 WHATSAPP_LINK = f"https://wa.me/{WHATSAPP_NUMBER}"
 
 SUBSCRIPTION_PRICE = "30 USDT"
