@@ -35,8 +35,8 @@ WHATSAPP_LINK = f"https://wa.me/{WHATSAPP_NUMBER}"
 
 SUBSCRIPTION_PRICE = "30 USDT"
 
-BINANCE_KLINES_URL = "https://api.binance.com/api/v3/klines"
-BINANCE_24HR_URL = "https://api.binance.com/api/v3/ticker/24hr"
+BINANCE_KLINES_URL = "https://data-api.binance.vision/api/v3/klines"
+BINANCE_24HR_URL = "https://data-api.binance.vision/api/v3/ticker/24hr"
 
 HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
