@@ -1,7 +1,6 @@
 import os
 import sys
 import time
-import math
 import logging
 import threading
 from datetime import datetime
@@ -9,7 +8,7 @@ import requests
 from flask import Flask, request, render_template_string, jsonify
 
 # ==============================================================================
-# 1. إعدادات السجلات والنظام (System Logging)
+# 1. إعدادات السجلات
 # ==============================================================================
 logging.basicConfig(
     level=logging.INFO,
@@ -19,7 +18,7 @@ logging.basicConfig(
 logger = logging.getLogger("WhaleScannerVIP")
 
 # ==============================================================================
-# 2. الثوابت وإعدادات البوتات والقنوات والواتساب
+# 2. الثوابت والإعدادات
 # ==============================================================================
 BOT_TOKENS = [
     "8730034376:AAHnBrqKjyuICdw69mHbszrbi0MFyMcNVGo",
@@ -31,7 +30,6 @@ PUBLIC_PROMO_CHANNEL = "@WhaleScanner_Alerts"
 BINANCE_PAY_ID = "1284168199"
 ADMIN_CONTACT = "@python.automation1"
 
-# استبدل هذا الرقم برقم هاتفك مع رمز الدولة (بدون علامة + أو مسافات، مثال: 249912345678)
 WHATSAPP_NUMBER = "249119806108"
 WHATSAPP_LINK = f"https://wa.me/{WHATSAPP_NUMBER}"
 
@@ -40,23 +38,212 @@ SUBSCRIPTION_PRICE = "30 USDT"
 BINANCE_KLINES_URL = "https://api.binance.com/api/v3/klines"
 BINANCE_24HR_URL = "https://api.binance.com/api/v3/ticker/24hr"
 
+HEADERS = {
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+}
+
 WATCHLIST = [
     "BTCUSDT", "ETHUSDT", "SOLUSDT", "BNBUSDT", "XRPUSDT",
     "DOGEUSDT", "ADAUSDT", "AVAXUSDT", "NEARUSDT", "PEPEUSDT",
     "SUIUSDT", "LINKUSDT"
 ]
 
-
-VOLUME_THRESHOLD_MULTIPLIER = 1.5
-MINIMUM_PRICE_CHANGE_PCT = 0.20
+# إعدادات حساسية مريحة للرصد
+VOLUME_THRESHOLD_MULTIPLIER = 1.4
+MINIMUM_PRICE_CHANGE_PCT = 0.18
 COOLDOWN_PERIOD_SECONDS = 600
-
 TIMEFRAME = "15m"
 
 COOLDOWN_TRACKER = {}
 
 # ==============================================================================
-# 3. واجهة الشراء والترويج (Commercial Web Landing & Checkout)
+# 3. محرك إرسال تيليجرام
+# ==============================================================================
+def send_telegram_msg(target_chat, message_payload: str) -> bool:
+    payload = {
+        "chat_id": target_chat,
+        "text": message_payload,
+        "parse_mode": "Markdown",
+        "disable_web_page_preview": True
+    }
+    for token in BOT_TOKENS:
+        endpoint = f"https://api.telegram.org/bot{token}/sendMessage"
+        try:
+            res = requests.post(endpoint, json=payload, timeout=10)
+            if res.status_code == 200:
+                return True
+            logger.warning(f"Telegram API status {res.status_code}: {res.text}")
+        except Exception as err:
+            logger.error(f"Telegram error: {err}")
+    return False
+
+# ==============================================================================
+# 4. تحليل المؤشرات وبيانات بينانس
+# ==============================================================================
+def calculate_rsi(klines, period=14):
+    if len(klines) < period + 1:
+        return 50.0
+    closes = [float(k[4]) for k in klines]
+    gains, losses = [], []
+    for i in range(1, len(closes)):
+        diff = closes[i] - closes[i - 1]
+        if diff >= 0:
+            gains.append(diff)
+            losses.append(0.0)
+        else:
+            gains.append(0.0)
+            losses.append(abs(diff))
+
+    avg_gain = sum(gains[-period:]) / period
+    avg_loss = sum(losses[-period:]) / period
+
+    if avg_loss == 0:
+        return 100.0
+    rs = avg_gain / avg_loss
+    return round(100.0 - (100.0 / (1.0 + rs)), 1)
+
+def fetch_binance_klines(symbol: str, interval: str = "15m", limit: int = 20):
+    params = {"symbol": symbol, "interval": interval, "limit": limit}
+    try:
+        res = requests.get(BINANCE_KLINES_URL, params=params, headers=HEADERS, timeout=10)
+        if res.status_code == 200:
+            return res.json()
+        logger.error(f"Binance API returned code {res.status_code} for {symbol}")
+    except Exception as e:
+        logger.error(f"Binance connection failed for {symbol}: {e}")
+    return None
+
+def fetch_24hr_context(symbol: str):
+    try:
+        res = requests.get(BINANCE_24HR_URL, params={"symbol": symbol}, headers=HEADERS, timeout=10)
+        if res.status_code == 200:
+            d = res.json()
+            return {
+                "24h_high": float(d.get("highPrice", 0.0)),
+                "24h_low": float(d.get("lowPrice", 0.0)),
+                "24h_change": float(d.get("priceChangePercent", 0.0))
+            }
+    except Exception:
+        pass
+    return {"24h_high": 0.0, "24h_low": 0.0, "24h_change": 0.0}
+
+def evaluate_symbol_breakout(symbol: str):
+    now = time.time()
+    if now - COOLDOWN_TRACKER.get(symbol, 0) < COOLDOWN_PERIOD_SECONDS:
+        return
+
+    klines = fetch_binance_klines(symbol, interval=TIMEFRAME, limit=18)
+    if not klines or len(klines) < 16:
+        return
+
+    rsi_value = calculate_rsi(klines, period=14)
+
+    curr_candle = klines[-1]
+    prev_candle = klines[-2]
+    hist_candle_1 = klines[-3]
+    hist_candle_2 = klines[-4]
+
+    avg_prev_volume = (float(hist_candle_1[5]) + float(hist_candle_2[5]) + float(prev_candle[5])) / 3.0
+    curr_volume = float(curr_candle[5])
+
+    curr_open = float(curr_candle[1])
+    curr_close = float(curr_candle[4])
+
+    if avg_prev_volume <= 0:
+        return
+
+    volume_ratio = curr_volume / avg_prev_volume
+    price_change_pct = ((curr_close - curr_open) / curr_open) * 100.0
+
+    if volume_ratio >= VOLUME_THRESHOLD_MULTIPLIER and abs(price_change_pct) >= MINIMUM_PRICE_CHANGE_PCT:
+        extra_stats = fetch_24hr_context(symbol)
+        current_utc = datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S')
+
+        if curr_close >= curr_open:
+            action_type = "🟢 صفقة شراء / صعود حيتان (LONG PUMP)"
+            promo_action = "🟢 BULLISH WHALE INFLOW"
+            sentiment_tag = "تجميع مؤسساتي قوي"
+            tp1 = curr_close * 1.015
+            tp2 = curr_close * 1.030
+            sl  = curr_close * 0.988
+        else:
+            action_type = "🔴 صفقة بيع / تصريف حيتان (SHORT DUMP)"
+            promo_action = "🔴 BEARISH WHALE OUTFLOW"
+            sentiment_tag = "ضغط تصريف بيعي"
+            tp1 = curr_close * 0.985
+            tp2 = curr_close * 0.970
+            sl  = curr_close * 1.012
+
+        vip_signal = (
+            f"🚨 *WHALE VOLUME INJECTION DETECTED* 🚨\n"
+            f"━━━━━━━━━━━━━━━━━━━━━━\n"
+            f"🪙 *العملة:* `#{symbol}`\n"
+            f"📊 *نوع الصفقة:* {action_type}\n"
+            f"💵 *سعر الدخول:* `${curr_close:,.4f}`\n"
+            f"📈 *تغير الشمعة:* `{price_change_pct:+.2f}%`\n"
+            f"🔥 *الفوليوم:* `{volume_ratio:.2f}x` أضعاف المعدل\n"
+            f"⚡ *مؤشر RSI:* `{rsi_value}`\n"
+            f"⏱ *الفريم:* `{TIMEFRAME}`\n"
+            f"━━━━━━━━━━━━━━━━━━━━━━\n"
+            f"🎯 *خطة التداول المعتمدة:*\n"
+            f"• Target 1: `${tp1:,.4f}`\n"
+            f"• Target 2: `${tp2:,.4f}`\n"
+            f"• Stop Loss: `${sl:,.4f}`\n"
+            f"━━━━━━━━━━━━━━━━━━━━━━\n"
+            f"📌 *سياق السوق 24h:*\n"
+            f"• تغير اليوم: `{extra_stats['24h_change']:+.2f}%`\n"
+            f"• الحالة: *{sentiment_tag}*\n"
+            f"━━━━━━━━━━━━━━━━━━━━━━\n"
+            f"💎 *Whale Radar VIP Engine*\n"
+            f"💰 الاشتراك: `{SUBSCRIPTION_PRICE}` / شهر\n"
+            f"💳 Binance Pay ID: `{BINANCE_PAY_ID}`\n"
+            f"💬 WhatsApp: {WHATSAPP_LINK}\n"
+            f"🕒 `{current_utc} UTC`"
+        )
+
+        promo_signal = (
+            f"🚨 *INSTITUTIONAL WHALE ALERT* 🚨\n\n"
+            f"🪙 Asset: *${symbol.replace('USDT', '')}*\n"
+            f"⚡ Action: *{promo_action}*\n"
+            f"📈 Price Change: `{price_change_pct:+.2f}%` in 15m\n"
+            f"🔥 Volume Spike: `{volume_ratio:.2f}x` above average!\n\n"
+            f"🔒 *Target 1, Target 2 & Stop-Loss are unlocked for VIP Members only.*\n\n"
+            f"💎 Join VIP to get complete entry/exit levels & live tracking:\n"
+            f"👉 Subscription: *{SUBSCRIPTION_PRICE}* via Binance Pay ID `{BINANCE_PAY_ID}`\n"
+            f"💬 WhatsApp Direct: {WHATSAPP_LINK}\n"
+            f"📩 Telegram Support: {ADMIN_CONTACT}\n\n"
+            f"#Crypto #WhaleAlert #Binance #{symbol.replace('USDT', '')}"
+        )
+
+        vip_sent = send_telegram_msg(VIP_CHANNEL_ID, vip_signal)
+        promo_sent = send_telegram_msg(PUBLIC_PROMO_CHANNEL, promo_signal)
+
+        if vip_sent or promo_sent:
+            COOLDOWN_TRACKER[symbol] = now
+            logger.info(f"Signal broadcasted successfully for {symbol}")
+
+# ==============================================================================
+# 5. محرك الفحص المستمر
+# ==============================================================================
+def start_continuous_scanner():
+    logger.info("🚀 Background Scanner Thread Started Successfully")
+    time.sleep(3)
+    # إرسال رسالة تأكيد تشغيل حية إلى القناة الخاصة
+    send_telegram_msg(VIP_CHANNEL_ID, "🟢 *نظام رادار الحيتان متصل ويعمل الآن على سيرفر Render بنجاح!*")
+
+    while True:
+        try:
+            for pair in WATCHLIST:
+                evaluate_symbol_breakout(pair)
+                time.sleep(0.5)
+            logger.info("Checked all pairs. Waiting 25s...")
+            time.sleep(25)
+        except Exception as global_err:
+            logger.critical(f"Scanner error: {global_err}", exc_info=True)
+            time.sleep(10)
+
+# ==============================================================================
+# 6. واجهة الويب (Flask)
 # ==============================================================================
 app = Flask(__name__)
 
@@ -203,208 +390,16 @@ def verify_payment():
     send_telegram_msg(VIP_CHANNEL_ID, admin_alert)
     return jsonify({"success": True, "message": "Verification received"}), 200
 
-def run_flask_server():
-    port = int(os.environ.get("PORT", 10000))
-    logger.info(f"Starting commercial checkout server on port {port}")
-    app.run(host="0.0.0.0", port=port, debug=False, use_reloader=False)
-
 # ==============================================================================
-# 4. محرك التيليجرام الذكي الداعم للبوتين معاً (Smart Dual-Bot Sender)
+# 7. إطلاق المحرك فور تحميل الملف (حتى مع Gunicorn)
 # ==============================================================================
-def send_telegram_msg(target_chat, message_payload: str) -> bool:
-    payload = {
-        "chat_id": target_chat,
-        "text": message_payload,
-        "parse_mode": "Markdown",
-        "disable_web_page_preview": True
-    }
-    
-    for token in BOT_TOKENS:
-        endpoint = f"https://api.telegram.org/bot{token}/sendMessage"
-        try:
-            res = requests.post(endpoint, json=payload, timeout=10)
-            if res.status_code == 200:
-                return True
-            logger.warning(f"Telegram API response for token {token[:12]}... on chat {target_chat}: {res.status_code} - {res.text}")
-        except Exception as err:
-            logger.error(f"Error connecting with token {token[:12]}...: {err}")
-            
-    return False
+scanner_thread = threading.Thread(target=start_continuous_scanner, daemon=True)
+scanner_thread.start()
 
-# ==============================================================================
-# 5. محرك التحليل الفني ومؤشر RSI
-# ==============================================================================
-def calculate_rsi(klines, period=14):
-    if len(klines) < period + 1:
-        return 50.0
-    closes = [float(k[4]) for k in klines]
-    gains = []
-    losses = []
-    for i in range(1, len(closes)):
-        diff = closes[i] - closes[i - 1]
-        if diff >= 0:
-            gains.append(diff)
-            losses.append(0.0)
-        else:
-            gains.append(0.0)
-            losses.append(abs(diff))
-
-    avg_gain = sum(gains[-period:]) / period
-    avg_loss = sum(losses[-period:]) / period
-
-    if avg_loss == 0:
-        return 100.0
-    rs = avg_gain / avg_loss
-    return round(100.0 - (100.0 / (1.0 + rs)), 1)
-
-def fetch_binance_klines(symbol: str, interval: str = "15m", limit: int = 20):
-    params = {"symbol": symbol, "interval": interval, "limit": limit}
-    try:
-        res = requests.get(BINANCE_KLINES_URL, params=params, timeout=10)
-        if res.status_code == 200:
-            return res.json()
-    except Exception as e:
-        logger.error(f"Binance connection failed for {symbol}: {e}")
-    return None
-
-def fetch_24hr_context(symbol: str):
-    try:
-        res = requests.get(BINANCE_24HR_URL, params={"symbol": symbol}, timeout=10)
-        if res.status_code == 200:
-            d = res.json()
-            return {
-                "24h_high": float(d.get("highPrice", 0.0)),
-                "24h_low": float(d.get("lowPrice", 0.0)),
-                "24h_change": float(d.get("priceChangePercent", 0.0))
-            }
-    except Exception:
-        pass
-    return {"24h_high": 0.0, "24h_low": 0.0, "24h_change": 0.0}
-
-def evaluate_symbol_breakout(symbol: str):
-    now = time.time()
-    if now - COOLDOWN_TRACKER.get(symbol, 0) < COOLDOWN_PERIOD_SECONDS:
-        return
-
-    klines = fetch_binance_klines(symbol, interval=TIMEFRAME, limit=18)
-    if not klines or len(klines) < 16:
-        return
-
-    rsi_value = calculate_rsi(klines, period=14)
-
-    curr_candle = klines[-1]
-    prev_candle = klines[-2]
-    hist_candle_1 = klines[-3]
-    hist_candle_2 = klines[-4]
-
-    avg_prev_volume = (float(hist_candle_1[5]) + float(hist_candle_2[5]) + float(prev_candle[5])) / 3.0
-    curr_volume = float(curr_candle[5])
-
-    curr_open = float(curr_candle[1])
-    curr_close = float(curr_candle[4])
-
-    if avg_prev_volume <= 0:
-        return
-
-    volume_ratio = curr_volume / avg_prev_volume
-    price_change_pct = ((curr_close - curr_open) / curr_open) * 100.0
-
-    if volume_ratio >= VOLUME_THRESHOLD_MULTIPLIER and abs(price_change_pct) >= MINIMUM_PRICE_CHANGE_PCT:
-        extra_stats = fetch_24hr_context(symbol)
-        current_utc = datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S')
-
-        if curr_close >= curr_open:
-            action_type = "🟢 صفقة شراء / صعود حيتان (LONG PUMP)"
-            promo_action = "🟢 BULLISH WHALE INFLOW"
-            sentiment_tag = "تجميع مؤسساتي قوي"
-            tp1 = curr_close * 1.015
-            tp2 = curr_close * 1.030
-            sl  = curr_close * 0.988
-        else:
-            action_type = "🔴 صفقة بيع / تصريف حيتان (SHORT DUMP)"
-            promo_action = "🔴 BEARISH WHALE OUTFLOW"
-            sentiment_tag = "ضغط تصريف بيعي"
-            tp1 = curr_close * 0.985
-            tp2 = curr_close * 0.970
-            sl  = curr_close * 1.012
-
-        vip_signal = (
-            f"🚨 *WHALE VOLUME INJECTION DETECTED* 🚨\n"
-            f"━━━━━━━━━━━━━━━━━━━━━━\n"
-            f"🪙 *العملة:* `#{symbol}`\n"
-            f"📊 *نوع الصفقة:* {action_type}\n"
-            f"💵 *سعر الدخول:* `${curr_close:,.4f}`\n"
-            f"📈 *تغير الشمعة:* `{price_change_pct:+.2f}%`\n"
-            f"🔥 *الفوليوم:* `{volume_ratio:.2f}x` أضعاف المعدل\n"
-            f"⚡ *مؤشر RSI:* `{rsi_value}`\n"
-            f"⏱ *الفريم:* `{TIMEFRAME}`\n"
-            f"━━━━━━━━━━━━━━━━━━━━━━\n"
-            f"🎯 *خطة التداول المعتمدة:*\n"
-            f"• Target 1: `${tp1:,.4f}`\n"
-            f"• Target 2: `${tp2:,.4f}`\n"
-            f"• Stop Loss: `${sl:,.4f}`\n"
-            f"━━━━━━━━━━━━━━━━━━━━━━\n"
-            f"📌 *سياق السوق 24h:*\n"
-            f"• تغير اليوم: `{extra_stats['24h_change']:+.2f}%`\n"
-            f"• الحالة: *{sentiment_tag}*\n"
-            f"━━━━━━━━━━━━━━━━━━━━━━\n"
-            f"💎 *Whale Radar VIP Engine*\n"
-            f"💰 الاشتراك: `{SUBSCRIPTION_PRICE}` / شهر\n"
-            f"💳 Binance Pay ID: `{BINANCE_PAY_ID}`\n"
-            f"💬 WhatsApp: {WHATSAPP_LINK}\n"
-            f"🕒 `{current_utc} UTC`"
-        )
-
-        promo_signal = (
-            f"🚨 *INSTITUTIONAL WHALE ALERT* 🚨\n\n"
-            f"🪙 Asset: *${symbol.replace('USDT', '')}*\n"
-            f"⚡ Action: *{promo_action}*\n"
-            f"📈 Price Change: `{price_change_pct:+.2f}%` in 15m\n"
-            f"🔥 Volume Spike: `{volume_ratio:.2f}x` above average!\n\n"
-            f"🔒 *Target 1, Target 2 & Stop-Loss are unlocked for VIP Members only.*\n\n"
-            f"💎 Join VIP to get complete entry/exit levels & live tracking:\n"
-            f"👉 Subscription: *{SUBSCRIPTION_PRICE}* via Binance Pay ID `{BINANCE_PAY_ID}`\n"
-            f"💬 WhatsApp Direct: {WHATSAPP_LINK}\n"
-            f"📩 Telegram Support: {ADMIN_CONTACT}\n\n"
-            f"#Crypto #WhaleAlert #Binance #{symbol.replace('USDT', '')}"
-        )
-
-        vip_sent = send_telegram_msg(VIP_CHANNEL_ID, vip_signal)
-        promo_sent = send_telegram_msg(PUBLIC_PROMO_CHANNEL, promo_signal)
-
-        if vip_sent or promo_sent:
-            COOLDOWN_TRACKER[symbol] = now
-            logger.info(f"Signal and global promo broadcasted for {symbol}")
-
-# ==============================================================================
-# 6. المحرك الأساسي وجدولة المسح الدائم (Execution Loop)
-# ==============================================================================
-def start_continuous_scanner():
-    logger.info("=" * 65)
-    logger.info("🚀 Whale Scanner Commercial Engine Initiated (Dual-Bot Engine)")
-    logger.info(f"💼 Binance Pay Revenue ID: {BINANCE_PAY_ID}")
-    logger.info(f"💬 WhatsApp Direct Link: {WHATSAPP_LINK}")
-    logger.info("=" * 65)
-
-    while True:
-        try:
-            for pair in WATCHLIST:
-                evaluate_symbol_breakout(pair)
-                time.sleep(0.5)
-
-            time.sleep(25)
-
-        except Exception as global_err:
-            logger.critical(f"Runtime error in scanner: {global_err}", exc_info=True)
-            time.sleep(10)
-
-# ==============================================================================
-# 7. نقطة الانطلاق (Entry Point)
-# ==============================================================================
 if __name__ == "__main__":
-    server_thread = threading.Thread(target=run_flask_server, daemon=True)
-    server_thread.start()
-    start_continuous_scanner()
+    port = int(os.environ.get("PORT", 10000))
+    app.run(host="0.0.0.0", port=port, debug=False)
+
 
 
 
