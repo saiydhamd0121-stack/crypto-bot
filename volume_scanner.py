@@ -3,7 +3,8 @@ import sys
 import time
 import logging
 import threading
-from datetime import datetime
+import sqlite3
+from datetime import datetime, timedelta
 import requests
 from flask import Flask, request, render_template_string, jsonify
 
@@ -34,7 +35,7 @@ WHATSAPP_NUMBER = "249119806108"
 WHATSAPP_LINK = f"https://wa.me/{WHATSAPP_NUMBER}"
 
 SUBSCRIPTION_PRICE = "10 USDT"
-
+DB_FILE = "subscribers.db"
 
 BINANCE_KLINES_URL = "https://data-api.binance.vision/api/v3/klines"
 BINANCE_24HR_URL = "https://data-api.binance.vision/api/v3/ticker/24hr"
@@ -49,7 +50,6 @@ WATCHLIST = [
     "SUIUSDT", "LINKUSDT"
 ]
 
-# إعدادات حساسية مريحة للرصد
 VOLUME_THRESHOLD_MULTIPLIER = 1.4
 MINIMUM_PRICE_CHANGE_PCT = 0.18
 COOLDOWN_PERIOD_SECONDS = 600
@@ -58,7 +58,47 @@ TIMEFRAME = "15m"
 COOLDOWN_TRACKER = {}
 
 # ==============================================================================
-# 3. محرك إرسال تيليجرام
+# 3. قاعدة البيانات (SQLite Database Engine)
+# ==============================================================================
+def init_db():
+    conn = sqlite3.connect(DB_FILE)
+    cursor = conn.cursor()
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS subscribers (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_handle TEXT NOT NULL,
+            tx_id TEXT UNIQUE NOT NULL,
+            start_date TEXT NOT NULL,
+            end_date TEXT NOT NULL,
+            status TEXT DEFAULT 'active'
+        )
+    """)
+    conn.commit()
+    conn.close()
+    logger.info("Database initialized successfully.")
+
+def add_subscriber(user_handle: str, tx_id: str, days: int = 30) -> bool:
+    try:
+        conn = sqlite3.connect(DB_FILE)
+        cursor = conn.cursor()
+        start = datetime.utcnow()
+        end = start + timedelta(days=days)
+        cursor.execute("""
+            INSERT INTO subscribers (user_handle, tx_id, start_date, end_date, status)
+            VALUES (?, ?, ?, ?, 'active')
+        """, (user_handle, tx_id, start.strftime('%Y-%m-%d %H:%M:%S'), end.strftime('%Y-%m-%d %H:%M:%S')))
+        conn.commit()
+        conn.close()
+        return True
+    except sqlite3.IntegrityError:
+        logger.warning(f"TxID already exists: {tx_id}")
+        return False
+    except Exception as e:
+        logger.error(f"Error adding subscriber: {e}")
+        return False
+
+# ==============================================================================
+# 4. محرك تيليجرام والروابط الآلية
 # ==============================================================================
 def send_telegram_msg(target_chat, message_payload: str) -> bool:
     payload = {
@@ -78,8 +118,47 @@ def send_telegram_msg(target_chat, message_payload: str) -> bool:
             logger.error(f"Telegram error: {err}")
     return False
 
+def create_vip_invite_link() -> str:
+    # إنشاء رابط استخدام لمرة واحدة صالح لمدة 24 ساعة
+    expire_timestamp = int(time.time()) + 86400
+    payload = {
+        "chat_id": VIP_CHANNEL_ID,
+        "member_limit": 1,
+        "expire_date": expire_timestamp
+    }
+    for token in BOT_TOKENS:
+        endpoint = f"https://api.telegram.org/bot{token}/createChatInviteLink"
+        try:
+            res = requests.post(endpoint, json=payload, timeout=10)
+            if res.status_code == 200:
+                data = res.json()
+                return data.get("result", {}).get("invite_link", "")
+        except Exception as err:
+            logger.error(f"Failed to generate invite link: {err}")
+    return ""
+
+def monitor_expirations_loop():
+    while True:
+        try:
+            time.sleep(3600)  # فحص كل ساعة
+            conn = sqlite3.connect(DB_FILE)
+            cursor = conn.cursor()
+            now_str = datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S')
+            cursor.execute("SELECT id, user_handle FROM subscribers WHERE status = 'active' AND end_date <= ?", (now_str,))
+            expired = cursor.fetchall()
+            for row in expired:
+                sub_id, handle = row
+                cursor.execute("UPDATE subscribers SET status = 'expired' WHERE id = ?", (sub_id,))
+                conn.commit()
+                alert = f"⚠️ *EXPIRED SUBSCRIPTION*\nUser: `{handle}` has completed 30 days. Access revoked."
+                send_telegram_msg(VIP_CHANNEL_ID, alert)
+            conn.close()
+        except Exception as err:
+            logger.error(f"Expiration checker error: {err}")
+            time.sleep(60)
+
 # ==============================================================================
-# 4. تحليل المؤشرات وبيانات بينانس
+# 5. تحليل المؤشرات وبيانات بينانس
 # ==============================================================================
 def calculate_rsi(klines, period=14):
     if len(klines) < period + 1:
@@ -224,27 +303,25 @@ def evaluate_symbol_breakout(symbol: str):
             logger.info(f"Signal broadcasted successfully for {symbol}")
 
 # ==============================================================================
-# 5. محرك الفحص المستمر
+# 6. محرك الفحص المستمر
 # ==============================================================================
 def start_continuous_scanner():
     logger.info("🚀 Background Scanner Thread Started Successfully")
     time.sleep(3)
-    # إرسال رسالة تأكيد تشغيل حية إلى القناة الخاصة
-    send_telegram_msg(VIP_CHANNEL_ID, "🟢 *نظام رادار الحيتان متصل ويعمل الآن على سيرفر Render بنجاح!*")
+    send_telegram_msg(VIP_CHANNEL_ID, "🟢 *نظام رادار الحيتان متصل ومحدث مع نظام أتمتة المشتركين بنجاح!*")
 
     while True:
         try:
             for pair in WATCHLIST:
                 evaluate_symbol_breakout(pair)
                 time.sleep(0.5)
-            logger.info("Checked all pairs. Waiting 25s...")
             time.sleep(25)
         except Exception as global_err:
             logger.critical(f"Scanner error: {global_err}", exc_info=True)
             time.sleep(10)
 
 # ==============================================================================
-# 6. واجهة الويب (Flask)
+# 7. واجهة الويب (Flask App)
 # ==============================================================================
 app = Flask(__name__)
 
@@ -279,7 +356,7 @@ HTML_TEMPLATE = """
         input:focus { outline: none; border-color: #00d26a; }
         button { width: 100%; padding: 14px; background: #f0b90b; color: #000; font-weight: 700; font-size: 15px; border: none; border-radius: 8px; cursor: pointer; transition: 0.2s; }
         button:hover { background: #e0aa00; }
-        .status-msg { margin-top: 15px; font-size: 14px; text-align: center; display: none; }
+        .status-msg { margin-top: 15px; font-size: 14px; text-align: center; display: none; line-height: 1.5; }
     </style>
 </head>
 <body>
@@ -292,7 +369,7 @@ HTML_TEMPLATE = """
             <div class="feature-item"><span>✓</span> 15m Institutional Volume Breakout Detection</div>
             <div class="feature-item"><span>✓</span> Automated Entry, TP1 (+1.5%), TP2 (+3%) & Stop Loss</div>
             <div class="feature-item"><span>✓</span> RSI Momentum & 24hr Context Filters</div>
-            <div class="feature-item"><span>✓</span> Exclusive VIP Trading Community Access</div>
+            <div class="feature-item"><span>✓</span> Instant Automated VIP Channel Access</div>
         </div>
 
         <div class="price-box">
@@ -309,14 +386,14 @@ HTML_TEMPLATE = """
 
         <form id="checkoutForm">
             <div class="form-group">
-                <label>Telegram / WhatsApp Username</label>
-                <input type="text" id="tg_username" placeholder="@username or Phone" required>
+                <label>Telegram Username or Phone Number</label>
+                <input type="text" id="tg_username" placeholder="@username or +12345..." required>
             </div>
             <div class="form-group">
                 <label>Binance Pay Transaction ID / Order ID</label>
                 <input type="text" id="tx_id" placeholder="Transaction ID" required>
             </div>
-            <button type="submit">Verify Payment & Join VIP</button>
+            <button type="submit">Verify Payment & Get VIP Link</button>
         </form>
 
         <div id="statusMsg" class="status-msg"></div>
@@ -328,7 +405,7 @@ HTML_TEMPLATE = """
             const btn = e.target.querySelector('button');
             const msg = document.getElementById('statusMsg');
             btn.disabled = true;
-            btn.innerText = "Submitting verification...";
+            btn.innerText = "Processing automated access...";
 
             const payload = {
                 telegram: document.getElementById('tg_username').value,
@@ -345,7 +422,7 @@ HTML_TEMPLATE = """
                 msg.style.display = 'block';
                 if(data.success) {
                     msg.style.color = '#00d26a';
-                    msg.innerHTML = "✅ Verification submitted! Our engine is verifying your payment. Access will be activated shortly.";
+                    msg.innerHTML = `✅ <b>Payment Submitted!</b><br>Your 1-Time VIP Invite Link:<br><a href="${data.invite_link}" target="_blank" style="color:#f0b90b; font-weight:bold; word-break:break-all;">${data.invite_link}</a><br><small style="color:#8da2c0;">Link is valid for 24h & 1 member.</small>`;
                     document.getElementById('checkoutForm').reset();
                 } else {
                     msg.style.color = '#ff4d4d';
@@ -357,7 +434,7 @@ HTML_TEMPLATE = """
                 msg.innerHTML = "❌ Network error. Please try again.";
             } finally {
                 btn.disabled = false;
-                btn.innerText = "Verify Payment & Join VIP";
+                btn.innerText = "Verify Payment & Get VIP Link";
             }
         });
     </script>
@@ -378,29 +455,41 @@ def verify_payment():
     if not tg_user or not tx_id:
         return jsonify({"success": False, "error": "Missing Contact or Transaction ID"}), 400
 
+    # تسجيل المشترك في قاعدة البيانات لمدة 30 يوماً
+    db_success = add_subscriber(tg_user, tx_id, days=30)
+    if not db_success:
+        return jsonify({"success": False, "error": "This Transaction ID has already been registered."}), 400
+
+    # توليد رابط دعوة لمرة واحدة خاص بالمشترك
+    invite_url = create_vip_invite_link()
+    if not invite_url:
+        invite_url = "https://t.me/+WhaleScannerSupport"
+
     admin_alert = (
-        f"💰 *NEW SUBSCRIPTION PAYMENT SUBMITTED*\n"
+        f"🎉 *NEW VIP SUBSCRIBER ACTIVATED*\n"
         f"━━━━━━━━━━━━━━━━━━━━━━\n"
         f"👤 *Client:* `{tg_user}`\n"
-        f"🧾 *Binance TxID:* `{tx_id}`\n"
+        f"🧾 *TxID:* `{tx_id}`\n"
         f"💵 *Amount:* `{SUBSCRIPTION_PRICE}`\n"
-        f"🕒 *Submitted at:* `{datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S')} UTC`\n"
-        f"━━━━━━━━━━━━━━━━━━━━━━\n"
-        f"👉 Please verify in your Binance app and grant access."
+        f"🔗 *1-Time Link Issued:* [Join Channel]({invite_url})\n"
+        f"⏳ *Valid for:* `30 Days`\n"
+        f"🕒 `{datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S')} UTC`"
     )
     send_telegram_msg(VIP_CHANNEL_ID, admin_alert)
-    return jsonify({"success": True, "message": "Verification received"}), 200
+
+    return jsonify({"success": True, "invite_link": invite_url}), 200
 
 # ==============================================================================
-# 7. إطلاق المحرك فور تحميل الملف (حتى مع Gunicorn)
+# 8. التشغيل التلقائي
 # ==============================================================================
+init_db()
+
 scanner_thread = threading.Thread(target=start_continuous_scanner, daemon=True)
 scanner_thread.start()
+
+expiration_thread = threading.Thread(target=monitor_expirations_loop, daemon=True)
+expiration_thread.start()
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 10000))
     app.run(host="0.0.0.0", port=port, debug=False)
-
-
-
-
