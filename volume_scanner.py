@@ -604,6 +604,70 @@ def evaluate_symbol_breakout(symbol: str):
             COOLDOWN_TRACKER[symbol] = now
             logger.info(f"Signal broadcasted successfully for {symbol}")
 
+# ==============================================================================
+# محرك تقرير الأداء والأرباح اليومي التلقائي (Daily PnL Recap)
+# ==============================================================================
+def generate_and_send_daily_report():
+    try:
+        conn = sqlite3.connect(DB_FILE)
+        cursor = conn.cursor()
+        
+        # جلب صفقات آخر 24 ساعة
+        one_day_ago = (datetime.utcnow() - timedelta(days=1)).strftime('%Y-%m-%d %H:%M:%S')
+        cursor.execute("""
+            SELECT symbol, direction, status 
+            FROM active_trades 
+            WHERE created_at >= ?
+        """, (one_day_ago,))
+        trades = cursor.fetchall()
+        conn.close()
+
+        if not trades:
+            return
+
+        total_trades = len(trades)
+        tp1_count = sum(1 for t in trades if t[2] in ('TP1_HIT', 'COMPLETED'))
+        tp2_count = sum(1 for t in trades if t[2] == 'COMPLETED')
+        
+        # تقدير متوسط الأرباح المحققة (1.5% لكل TP1، و 3.0% لكل TP2)
+        total_profit_pct = (tp1_count * 1.5) + (tp2_count * 1.5)
+        win_rate = (tp1_count / total_trades * 100) if total_trades > 0 else 0
+
+        current_date_str = datetime.utcnow().strftime('%Y-%m-%d')
+
+        recap_msg = (
+            f"📊 *WHALE RADAR 24H PERFORMANCE RECAP* 📊\n"
+            f"━━━━━━━━━━━━━━━━━━━━━━\n"
+            f"📅 *التاريخ:* `{current_date_str} UTC`\n"
+            f"🎯 *إجمالي الصفقات المرصودة:* `{total_trades}`\n"
+            f"✅ *الصفقات المحققة للأهداف:* `{tp1_count}`\n"
+            f"🚀 *نسبة النجاح (Win-Rate):* `{win_rate:.1f}%`\n"
+            f"💰 *إجمالي العائد المحقق:* `+{total_profit_pct:.1f}% Net Profit`\n"
+            f"━━━━━━━━━━━━━━━━━━━━━━\n"
+            f"💎 *انضم للرادار المؤسسي واقتنص تحركات الحيتان لحظياً:*\n"
+            f"• اشتراك شهري: *{SUBSCRIPTION_PRICE}*\n"
+            f"• الدفع الفوري عبر Binance Pay ID: `{BINANCE_PAY_ID}`\n"
+            f"💬 للتواصل والدعم المباشر: {ADMIN_CONTACT}\n"
+            f"━━━━━━━━━━━━━━━━━━━━━━\n"
+            f"#Crypto #Binance #ProfitReport #WhaleScanner"
+        )
+
+        send_telegram_msg(VIP_CHANNEL_ID, recap_msg)
+        send_telegram_msg(PUBLIC_PROMO_CHANNEL, recap_msg)
+        logger.info("Daily performance recap sent successfully.")
+    except Exception as err:
+        logger.error(f"Error in daily report generator: {err}")
+
+def daily_report_scheduler_loop():
+    """حلقة مراقبة تعمل كل 24 ساعة لإرسال التقرير"""
+    while True:
+        try:
+            # الانتظار لمدة 24 ساعة (86400 ثانية)
+            time.sleep(86400)
+            generate_and_send_daily_report()
+        except Exception as e:
+            logger.error(f"Daily scheduler error: {e}")
+            time.sleep(60)
 
 # ==============================================================================
 # 9. محرك الفحص المستمر وتتبع الأسعار
@@ -926,3 +990,6 @@ expiration_thread.start()
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 10000))
     app.run(host="0.0.0.0", port=port, debug=False)
+    daily_report_thread = threading.Thread(target=daily_report_scheduler_loop, daemon=True)
+    daily_report_thread.start()
+
