@@ -33,7 +33,8 @@ ADMIN_CONTACT = "@python.automation1"
 WHATSAPP_NUMBER = "249119806108"
 WHATSAPP_LINK = f"https://wa.me/{WHATSAPP_NUMBER}"
 
-SUBSCRIPTION_PRICE = "30 USDT"
+SUBSCRIPTION_PRICE = "10 USDT"
+
 
 BINANCE_KLINES_URL = "https://data-api.binance.vision/api/v3/klines"
 BINANCE_24HR_URL = "https://data-api.binance.vision/api/v3/ticker/24hr"
@@ -295,7 +296,7 @@ HTML_TEMPLATE = """
         </div>
 
         <div class="price-box">
-            <div class="price">30 USDT</div>
+            <div class="price">10 USDT</div>
             <div class="price-period">Monthly VIP Access</div>
         </div>
 
