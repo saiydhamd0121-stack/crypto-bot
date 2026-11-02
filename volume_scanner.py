@@ -180,12 +180,24 @@ def generate_chart_image(symbol: str, klines: list, entry_price: float, tp1: flo
 # ==============================================================================
 # 5. محرك إرسال تيليجرام
 # ==============================================================================
+APP_URL = "https://crypto-bot-k21c.onrender.com/app"
+
+def get_webapp_keyboard():
+    return {
+        "inline_keyboard": [
+            [
+                {"text": "🚀 Open Live Radar App", "web_app": {"url": APP_URL}}
+            ]
+        ]
+    }
+
 def send_telegram_msg(target_chat, message_payload: str) -> bool:
     payload = {
         "chat_id": target_chat,
         "text": message_payload,
         "parse_mode": "Markdown",
-        "disable_web_page_preview": True
+        "disable_web_page_preview": True,
+        "reply_markup": get_webapp_keyboard()
     }
     for token in BOT_TOKENS:
         endpoint = f"https://api.telegram.org/bot{token}/sendMessage"
@@ -198,18 +210,25 @@ def send_telegram_msg(target_chat, message_payload: str) -> bool:
     return False
 
 def send_telegram_photo(target_chat, photo_buffer: io.BytesIO, caption: str) -> bool:
+    import json
     for token in BOT_TOKENS:
         endpoint = f"https://api.telegram.org/bot{token}/sendPhoto"
         try:
             photo_buffer.seek(0)
             files = {"photo": ("chart.png", photo_buffer, "image/png")}
-            data = {"chat_id": target_chat, "caption": caption, "parse_mode": "Markdown"}
+            data = {
+                "chat_id": target_chat,
+                "caption": caption,
+                "parse_mode": "Markdown",
+                "reply_markup": json.dumps(get_webapp_keyboard())
+            }
             res = requests.post(endpoint, files=files, data=data, timeout=15)
             if res.status_code == 200:
                 return True
         except Exception as err:
             logger.error(f"Telegram photo error: {err}")
     return False
+
 
 def create_vip_invite_link() -> str:
     expire_timestamp = int(time.time()) + 86400
