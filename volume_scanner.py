@@ -2,6 +2,7 @@ import os
 import sys
 import io
 import time
+import json
 import logging
 import threading
 import sqlite3
@@ -12,6 +13,7 @@ import matplotlib
 matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 
+import websocket
 from flask import Flask, request, render_template_string, jsonify
 
 # ==============================================================================
@@ -62,15 +64,17 @@ MINIMUM_PRICE_CHANGE_PCT = 0.18
 COOLDOWN_PERIOD_SECONDS = 600
 TIMEFRAME = "15m"
 
+# حد التصفية المعتمد للتنبيه (50,000 دولار فأكثر)
+MIN_LIQUIDATION_USD = 50000.0
+
 COOLDOWN_TRACKER = {}
 
 # ==============================================================================
-# 3. محرك قاعدة البيانات (SQLite Database Engine)
+# 3. محرك قاعدة البيانات (SQLite)
 # ==============================================================================
 def init_db():
     conn = sqlite3.connect(DB_FILE)
     cursor = conn.cursor()
-    # جدول المشتركين
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS subscribers (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -81,7 +85,6 @@ def init_db():
             status TEXT DEFAULT 'active'
         )
     """)
-    # جدول الصفقات المفتوحة لتتبع الأرباح
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS active_trades (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -97,7 +100,7 @@ def init_db():
     """)
     conn.commit()
     conn.close()
-    logger.info("Database and active_trades initialized successfully.")
+    logger.info("Database initialized.")
 
 def add_subscriber(user_handle: str, tx_id: str, days: int = 30) -> bool:
     try:
@@ -132,7 +135,7 @@ def record_trade(symbol: str, direction: str, entry: float, tp1: float, tp2: flo
         logger.error(f"Failed to record trade: {err}")
 
 # ==============================================================================
-# 4. محرك رسم الشارت الفوري (Chart Generation)
+# 4. محرك رسم الشارت الفوري
 # ==============================================================================
 def generate_chart_image(symbol: str, klines: list, entry_price: float, tp1: float, tp2: float, sl: float) -> io.BytesIO:
     recent_klines = klines[-15:]
@@ -177,7 +180,7 @@ def generate_chart_image(symbol: str, klines: list, entry_price: float, tp1: flo
     return buf
 
 # ==============================================================================
-# 5. محرك إرسال تيليجرام والروابط الآلية
+# 5. محرك إرسال تيليجرام
 # ==============================================================================
 def send_telegram_msg(target_chat, message_payload: str) -> bool:
     payload = {
@@ -249,7 +252,58 @@ def monitor_expirations_loop():
             time.sleep(60)
 
 # ==============================================================================
-# 6. تحليل المؤشرات وبيانات بينانس
+# 6. محرك رصد تصفيات العقود الآجلة اللحظي (Futures Liquidations Engine)
+# ==============================================================================
+def on_liquidation_message(ws, message):
+    try:
+        data = json.loads(message).get('o', {})
+        symbol = data.get('s')
+        if symbol not in WATCHLIST:
+            return
+
+        side = data.get('S')  # BUY (تصفية صفقة بيع) أو SELL (تصفية صفقة شراء)
+        qty = float(data.get('q', 0.0))
+        price = float(data.get('p', 0.0))
+        total_usd = qty * price
+
+        if total_usd >= MIN_LIQUIDATION_USD:
+            direction_text = "🔴 تصفية شراء (LONG Liquidated)" if side == "SELL" else "🟢 تصفية بيع (SHORT Liquidated)"
+            squeeze_signal = "انفجار صعودي محتمل (Short Squeeze) 🚀" if side == "BUY" else "هبوط تصريفي سريع (Long Squeeze) 🔻"
+
+            alert_msg = (
+                f"⚡ *INSTITUTIONAL LIQUIDATION DETECTED* ⚡\n"
+                f"━━━━━━━━━━━━━━━━━━━━━━\n"
+                f"🪙 *العملة:* `#{symbol}`\n"
+                f"💥 *نوع التصفية:* {direction_text}\n"
+                f"💵 *قيمة التصفية:* `${total_usd:,.0f} USD`\n"
+                f"📊 *سعر التنفيذ:* `${price:,.4f}`\n"
+                f"🎯 *التوقع الفني:* {squeeze_signal}\n"
+                f"━━━━━━━━━━━━━━━━━━━━━━\n"
+                f"💎 *Whale Radar VIP Intelligence*\n"
+                f"💰 الاشتراك: `{SUBSCRIPTION_PRICE}` / شهر\n"
+                f"💳 Binance Pay ID: `{BINANCE_PAY_ID}`"
+            )
+            send_telegram_msg(VIP_CHANNEL_ID, alert_msg)
+            send_telegram_msg(PUBLIC_PROMO_CHANNEL, f"⚡ *WHALE LIQUIDATION:* ${total_usd:,.0f} USD wiped out on #{symbol}!\nLive institutional tracking via Whale Radar VIP.")
+    except Exception as err:
+        logger.error(f"Liquidation stream error: {err}")
+
+def start_liquidation_listener():
+    # اتصال دائم ببث تصفيات بينانس
+    ws_url = "wss://fstream.binance.com/ws/!forceOrder@arr"
+    while True:
+        try:
+            ws = websocket.WebSocketApp(
+                ws_url,
+                on_message=on_liquidation_message
+            )
+            ws.run_forever()
+        except Exception as e:
+            logger.error(f"Liquidation WebSocket disconnected: {e}. Reconnecting...")
+            time.sleep(5)
+
+# ==============================================================================
+# 7. تحليل المؤشرات وتتبع الأهداف
 # ==============================================================================
 def calculate_rsi(klines, period=14):
     if len(klines) < period + 1:
@@ -306,9 +360,6 @@ def fetch_24hr_context(symbol: str):
         pass
     return {"24h_high": 0.0, "24h_low": 0.0, "24h_change": 0.0}
 
-# ==============================================================================
-# 7. محرك تتبع ومطابقة الأهداف التلقائي (Automated TP/SL Engine)
-# ==============================================================================
 def check_active_trades(prices_dict):
     try:
         conn = sqlite3.connect(DB_FILE)
@@ -322,7 +373,6 @@ def check_active_trades(prices_dict):
             if not current_price:
                 continue
 
-            # تتبع صفقات الشراء (LONG)
             if direction == "LONG":
                 if status == 'OPEN' and current_price >= tp1:
                     cursor.execute("UPDATE active_trades SET status = 'TP1_HIT' WHERE id = ?", (t_id,))
@@ -335,10 +385,10 @@ def check_active_trades(prices_dict):
                         f"✅ *الهدف الأول:* `${tp1:,.4f}` (+1.50% Net Profit)\n"
                         f"⚡ *السعر الحالي:* `${current_price:,.4f}`\n"
                         f"━━━━━━━━━━━━━━━━━━━━━━\n"
-                        f"💎 مبروك لأعضاء VIP! تم تأمين الأرباح ونقل وقف الخسارة إلى نقطة الدخول."
+                        f"💎 مبروك لأعضاء VIP! تم تأمين الأرباح ونقل وقف الخسارة لنقطة الدخول."
                     )
                     send_telegram_msg(VIP_CHANNEL_ID, alert)
-                    send_telegram_msg(PUBLIC_PROMO_CHANNEL, f"🎯 *TARGET 1 HIT ON #{symbol} (+1.5%)* ✅\nJoin VIP to get full real-time entries & targets!")
+                    send_telegram_msg(PUBLIC_PROMO_CHANNEL, f"🎯 *TARGET 1 HIT ON #{symbol} (+1.5%)* ✅\nJoin VIP to get full real-time targets!")
 
                 elif current_price >= tp2:
                     cursor.execute("UPDATE active_trades SET status = 'COMPLETED' WHERE id = ?", (t_id,))
@@ -350,16 +400,15 @@ def check_active_trades(prices_dict):
                         f"💵 *سعر الدخول:* `${entry:,.4f}`\n"
                         f"🎯 *الهدف الثاني:* `${tp2:,.4f}` (+3.00% Full Profit)\n"
                         f"━━━━━━━━━━━━━━━━━━━━━━\n"
-                        f"💰 إغلاق الصفقة بنجاح تام وأرباح استثنائية لأعضاء VIP!"
+                        f"💰 إغلاق الصفقة بنجاح تام لأعضاء VIP!"
                     )
                     send_telegram_msg(VIP_CHANNEL_ID, alert)
-                    send_telegram_msg(PUBLIC_PROMO_CHANNEL, f"🚀 *ALL TARGETS HIT ON #{symbol} (+3.0%)* 🔥\nAutomated Whale Radar precision!")
+                    send_telegram_msg(PUBLIC_PROMO_CHANNEL, f"🚀 *ALL TARGETS HIT ON #{symbol} (+3.0%)* 🔥\nPrecision automated trading.")
 
                 elif current_price <= sl and status == 'OPEN':
                     cursor.execute("UPDATE active_trades SET status = 'STOPPED' WHERE id = ?", (t_id,))
                     conn.commit()
 
-            # تتبع صفقات البيع (SHORT)
             elif direction == "SHORT":
                 if status == 'OPEN' and current_price <= tp1:
                     cursor.execute("UPDATE active_trades SET status = 'TP1_HIT' WHERE id = ?", (t_id,))
@@ -372,10 +421,10 @@ def check_active_trades(prices_dict):
                         f"✅ *الهدف الأول:* `${tp1:,.4f}` (+1.50% Net Profit)\n"
                         f"⚡ *السعر الحالي:* `${current_price:,.4f}`\n"
                         f"━━━━━━━━━━━━━━━━━━━━━━\n"
-                        f"💎 مبروك لأعضاء VIP! تم تأمين الأرباح ونقل وقف الخسارة إلى نقطة الدخول."
+                        f"💎 مبروك لأعضاء VIP! تم تأمين الأرباح ونقل وقف الخسارة لنقطة الدخول."
                     )
                     send_telegram_msg(VIP_CHANNEL_ID, alert)
-                    send_telegram_msg(PUBLIC_PROMO_CHANNEL, f"🎯 *TARGET 1 HIT ON #{symbol} (+1.5%)* ✅\nJoin VIP to get full real-time entries & targets!")
+                    send_telegram_msg(PUBLIC_PROMO_CHANNEL, f"🎯 *TARGET 1 HIT ON #{symbol} (+1.5%)* ✅\nJoin VIP to get full real-time targets!")
 
                 elif current_price <= tp2:
                     cursor.execute("UPDATE active_trades SET status = 'COMPLETED' WHERE id = ?", (t_id,))
@@ -387,10 +436,10 @@ def check_active_trades(prices_dict):
                         f"💵 *سعر الدخول:* `${entry:,.4f}`\n"
                         f"🎯 *الهدف الثاني:* `${tp2:,.4f}` (+3.00% Full Profit)\n"
                         f"━━━━━━━━━━━━━━━━━━━━━━\n"
-                        f"💰 إغلاق الصفقة بنجاح تام وأرباح استثنائية لأعضاء VIP!"
+                        f"💰 إغلاق الصفقة بنجاح تام لأعضاء VIP!"
                     )
                     send_telegram_msg(VIP_CHANNEL_ID, alert)
-                    send_telegram_msg(PUBLIC_PROMO_CHANNEL, f"🚀 *ALL TARGETS HIT ON #{symbol} (+3.0%)* 🔥\nAutomated Whale Radar precision!")
+                    send_telegram_msg(PUBLIC_PROMO_CHANNEL, f"🚀 *ALL TARGETS HIT ON #{symbol} (+3.0%)* 🔥\nPrecision automated trading.")
 
                 elif current_price >= sl and status == 'OPEN':
                     cursor.execute("UPDATE active_trades SET status = 'STOPPED' WHERE id = ?", (t_id,))
@@ -452,9 +501,7 @@ def evaluate_symbol_breakout(symbol: str):
             tp2 = curr_close * 0.970
             sl  = curr_close * 1.012
 
-        # تسجيل الصفقة لتتبع الأرباح تلقائياً
         record_trade(symbol, direction_code, curr_close, tp1, tp2, sl)
-
         chart_buffer = generate_chart_image(symbol, klines, curr_close, tp1, tp2, sl)
 
         vip_signal = (
@@ -511,11 +558,10 @@ def evaluate_symbol_breakout(symbol: str):
 def start_continuous_scanner():
     logger.info("🚀 Background Scanner Thread Started Successfully")
     time.sleep(3)
-    send_telegram_msg(VIP_CHANNEL_ID, "🟢 *نظام رادار الحيتان متصل مع محرك تتبع الأرباح (TP/SL) التلقائي بنجاح!*")
+    send_telegram_msg(VIP_CHANNEL_ID, "🟢 *نظام رادار الحيتان متصل مع محرك رصد التصفيات (Liquidations Engine) بنجاح!*")
 
     while True:
         try:
-            # جلب كل الأسعار الحالية مرة واحدة لمطابقة الأهداف بسرعة
             prices = fetch_current_prices()
             if prices:
                 check_active_trades(prices)
@@ -572,9 +618,10 @@ HTML_TEMPLATE = """
     <div class="card">
         <div class="badge">Live 24/7 Whale Engine</div>
         <h1>Whale Radar VIP</h1>
-        <p class="subtitle">Institutional volume breakout scanner tracking whale entries with automated Take-Profit & Stop-Loss targets.</p>
+        <p class="subtitle">Institutional volume breakout & futures liquidation scanner tracking whale entries with automated TP/SL targets.</p>
         
         <div class="features">
+            <div class="feature-item"><span>✓</span> Real-Time Futures Liquidation Alerts (Short/Long Squeeze)</div>
             <div class="feature-item"><span>✓</span> 15m Institutional Volume Breakout Detection</div>
             <div class="feature-item"><span>✓</span> Automated Visual Candlestick & Volume Charts</div>
             <div class="feature-item"><span>✓</span> Automated Target Tracking & Profit Hit Alerts</div>
@@ -687,13 +734,19 @@ def verify_payment():
     return jsonify({"success": True, "invite_link": invite_url}), 200
 
 # ==============================================================================
-# 11. التشغيل التلقائي
+# 11. التشغيل المتوازي
 # ==============================================================================
 init_db()
 
+# تشغيل فحص الشموع والأهداف
 scanner_thread = threading.Thread(target=start_continuous_scanner, daemon=True)
 scanner_thread.start()
 
+# تشغيل بث تصفيات العقود الآجلة اللحظي
+liquidation_thread = threading.Thread(target=start_liquidation_listener, daemon=True)
+liquidation_thread.start()
+
+# تشغيل فحص صلاحية المشتركين
 expiration_thread = threading.Thread(target=monitor_expirations_loop, daemon=True)
 expiration_thread.start()
 
