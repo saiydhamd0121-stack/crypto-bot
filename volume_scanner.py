@@ -9,7 +9,7 @@ from datetime import datetime, timedelta
 import requests
 
 import matplotlib
-matplotlib.use('Agg')  # للرسم في الخلفية على السيرفر دون الحاجة لشاشة
+matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 
 from flask import Flask, request, render_template_string, jsonify
@@ -45,6 +45,7 @@ DB_FILE = "subscribers.db"
 
 BINANCE_KLINES_URL = "https://data-api.binance.vision/api/v3/klines"
 BINANCE_24HR_URL = "https://data-api.binance.vision/api/v3/ticker/24hr"
+BINANCE_PRICE_URL = "https://data-api.binance.vision/api/v3/ticker/price"
 
 HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
@@ -64,11 +65,12 @@ TIMEFRAME = "15m"
 COOLDOWN_TRACKER = {}
 
 # ==============================================================================
-# 3. قاعدة البيانات (SQLite Database Engine)
+# 3. محرك قاعدة البيانات (SQLite Database Engine)
 # ==============================================================================
 def init_db():
     conn = sqlite3.connect(DB_FILE)
     cursor = conn.cursor()
+    # جدول المشتركين
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS subscribers (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -79,9 +81,23 @@ def init_db():
             status TEXT DEFAULT 'active'
         )
     """)
+    # جدول الصفقات المفتوحة لتتبع الأرباح
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS active_trades (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            symbol TEXT NOT NULL,
+            direction TEXT NOT NULL,
+            entry_price REAL NOT NULL,
+            tp1 REAL NOT NULL,
+            tp2 REAL NOT NULL,
+            sl REAL NOT NULL,
+            status TEXT DEFAULT 'OPEN',
+            created_at TEXT NOT NULL
+        )
+    """)
     conn.commit()
     conn.close()
-    logger.info("Database initialized successfully.")
+    logger.info("Database and active_trades initialized successfully.")
 
 def add_subscriber(user_handle: str, tx_id: str, days: int = 30) -> bool:
     try:
@@ -97,18 +113,29 @@ def add_subscriber(user_handle: str, tx_id: str, days: int = 30) -> bool:
         conn.close()
         return True
     except sqlite3.IntegrityError:
-        logger.warning(f"TxID already exists: {tx_id}")
         return False
     except Exception as e:
         logger.error(f"Error adding subscriber: {e}")
         return False
 
+def record_trade(symbol: str, direction: str, entry: float, tp1: float, tp2: float, sl: float):
+    try:
+        conn = sqlite3.connect(DB_FILE)
+        cursor = conn.cursor()
+        cursor.execute("""
+            INSERT INTO active_trades (symbol, direction, entry_price, tp1, tp2, sl, status, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, 'OPEN', ?)
+        """, (symbol, direction, entry, tp1, tp2, sl, datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S')))
+        conn.commit()
+        conn.close()
+    except Exception as err:
+        logger.error(f"Failed to record trade: {err}")
+
 # ==============================================================================
 # 4. محرك رسم الشارت الفوري (Chart Generation)
 # ==============================================================================
 def generate_chart_image(symbol: str, klines: list, entry_price: float, tp1: float, tp2: float, sl: float) -> io.BytesIO:
-    """رسم شارت الشموع والفوليوم مع خطوط الأهداف بالكامل في الذاكرة"""
-    recent_klines = klines[-15:]  # آخر 15 شمعة
+    recent_klines = klines[-15:]
     opens = [float(k[1]) for k in recent_klines]
     highs = [float(k[2]) for k in recent_klines]
     lows = [float(k[3]) for k in recent_klines]
@@ -120,7 +147,6 @@ def generate_chart_image(symbol: str, klines: list, entry_price: float, tp1: flo
     ax1.set_facecolor('#0f172a')
     ax2.set_facecolor('#0f172a')
 
-    # رسم الشموع
     for i in range(len(recent_klines)):
         color = '#00e676' if closes[i] >= opens[i] else '#ff1744'
         ax1.plot([i, i], [lows[i], highs[i]], color=color, linewidth=1.2)
@@ -129,13 +155,11 @@ def generate_chart_image(symbol: str, klines: list, entry_price: float, tp1: flo
         ax1.bar(i, body_height, bottom=body_bottom, color=color, width=0.6, align='center')
         ax2.bar(i, volumes[i], color=color, width=0.6, alpha=0.85, align='center')
 
-    # رسم خطوط التداول
     ax1.axhline(entry_price, color='#ffeb3b', linestyle='--', linewidth=1.5, label=f'Entry: {entry_price:.4f}')
     ax1.axhline(tp1, color='#00e676', linestyle=':', linewidth=1.3, label=f'TP1: {tp1:.4f}')
     ax1.axhline(tp2, color='#00b0ff', linestyle=':', linewidth=1.3, label=f'TP2: {tp2:.4f}')
     ax1.axhline(sl, color='#f44336', linestyle='--', linewidth=1.3, label=f'SL: {sl:.4f}')
 
-    # تنسيق الرسم البياني
     ax1.set_title(f"Whale Radar Alert: #{symbol} (15m)", color='#ffffff', fontsize=12, fontweight='bold')
     ax1.tick_params(colors='#94a3b8')
     ax1.grid(True, color='#1e293b', linestyle='-', alpha=0.6)
@@ -153,7 +177,7 @@ def generate_chart_image(symbol: str, klines: list, entry_price: float, tp1: flo
     return buf
 
 # ==============================================================================
-# 5. محرك إرسال التيليجرام والروابط الآلية
+# 5. محرك إرسال تيليجرام والروابط الآلية
 # ==============================================================================
 def send_telegram_msg(target_chat, message_payload: str) -> bool:
     payload = {
@@ -259,6 +283,15 @@ def fetch_binance_klines(symbol: str, interval: str = "15m", limit: int = 25):
         logger.error(f"Binance connection failed for {symbol}: {e}")
     return None
 
+def fetch_current_prices():
+    try:
+        res = requests.get(BINANCE_PRICE_URL, headers=HEADERS, timeout=10)
+        if res.status_code == 200:
+            return {item['symbol']: float(item['price']) for item in res.json()}
+    except Exception:
+        pass
+    return {}
+
 def fetch_24hr_context(symbol: str):
     try:
         res = requests.get(BINANCE_24HR_URL, params={"symbol": symbol}, headers=HEADERS, timeout=10)
@@ -273,6 +306,103 @@ def fetch_24hr_context(symbol: str):
         pass
     return {"24h_high": 0.0, "24h_low": 0.0, "24h_change": 0.0}
 
+# ==============================================================================
+# 7. محرك تتبع ومطابقة الأهداف التلقائي (Automated TP/SL Engine)
+# ==============================================================================
+def check_active_trades(prices_dict):
+    try:
+        conn = sqlite3.connect(DB_FILE)
+        cursor = conn.cursor()
+        cursor.execute("SELECT id, symbol, direction, entry_price, tp1, tp2, sl, status FROM active_trades WHERE status IN ('OPEN', 'TP1_HIT')")
+        trades = cursor.fetchall()
+
+        for t in trades:
+            t_id, symbol, direction, entry, tp1, tp2, sl, status = t
+            current_price = prices_dict.get(symbol)
+            if not current_price:
+                continue
+
+            # تتبع صفقات الشراء (LONG)
+            if direction == "LONG":
+                if status == 'OPEN' and current_price >= tp1:
+                    cursor.execute("UPDATE active_trades SET status = 'TP1_HIT' WHERE id = ?", (t_id,))
+                    conn.commit()
+                    alert = (
+                        f"🎯 *TARGET 1 HIT! | تم تحقيق الهدف الأول بنجاح* 🎯\n"
+                        f"━━━━━━━━━━━━━━━━━━━━━━\n"
+                        f"🪙 *العملة:* `#{symbol}` (شراء / LONG)\n"
+                        f"💵 *سعر الدخول:* `${entry:,.4f}`\n"
+                        f"✅ *الهدف الأول:* `${tp1:,.4f}` (+1.50% Net Profit)\n"
+                        f"⚡ *السعر الحالي:* `${current_price:,.4f}`\n"
+                        f"━━━━━━━━━━━━━━━━━━━━━━\n"
+                        f"💎 مبروك لأعضاء VIP! تم تأمين الأرباح ونقل وقف الخسارة إلى نقطة الدخول."
+                    )
+                    send_telegram_msg(VIP_CHANNEL_ID, alert)
+                    send_telegram_msg(PUBLIC_PROMO_CHANNEL, f"🎯 *TARGET 1 HIT ON #{symbol} (+1.5%)* ✅\nJoin VIP to get full real-time entries & targets!")
+
+                elif current_price >= tp2:
+                    cursor.execute("UPDATE active_trades SET status = 'COMPLETED' WHERE id = ?", (t_id,))
+                    conn.commit()
+                    alert = (
+                        f"🚀 *TARGET 2 DESTROYED! | تم تحقيق جميع الأهداف* 🚀\n"
+                        f"━━━━━━━━━━━━━━━━━━━━━━\n"
+                        f"🪙 *العملة:* `#{symbol}` (شراء / LONG)\n"
+                        f"💵 *سعر الدخول:* `${entry:,.4f}`\n"
+                        f"🎯 *الهدف الثاني:* `${tp2:,.4f}` (+3.00% Full Profit)\n"
+                        f"━━━━━━━━━━━━━━━━━━━━━━\n"
+                        f"💰 إغلاق الصفقة بنجاح تام وأرباح استثنائية لأعضاء VIP!"
+                    )
+                    send_telegram_msg(VIP_CHANNEL_ID, alert)
+                    send_telegram_msg(PUBLIC_PROMO_CHANNEL, f"🚀 *ALL TARGETS HIT ON #{symbol} (+3.0%)* 🔥\nAutomated Whale Radar precision!")
+
+                elif current_price <= sl and status == 'OPEN':
+                    cursor.execute("UPDATE active_trades SET status = 'STOPPED' WHERE id = ?", (t_id,))
+                    conn.commit()
+
+            # تتبع صفقات البيع (SHORT)
+            elif direction == "SHORT":
+                if status == 'OPEN' and current_price <= tp1:
+                    cursor.execute("UPDATE active_trades SET status = 'TP1_HIT' WHERE id = ?", (t_id,))
+                    conn.commit()
+                    alert = (
+                        f"🎯 *TARGET 1 HIT! | تم تحقيق الهدف الأول بنجاح* 🎯\n"
+                        f"━━━━━━━━━━━━━━━━━━━━━━\n"
+                        f"🪙 *العملة:* `#{symbol}` (بيع / SHORT)\n"
+                        f"💵 *سعر الدخول:* `${entry:,.4f}`\n"
+                        f"✅ *الهدف الأول:* `${tp1:,.4f}` (+1.50% Net Profit)\n"
+                        f"⚡ *السعر الحالي:* `${current_price:,.4f}`\n"
+                        f"━━━━━━━━━━━━━━━━━━━━━━\n"
+                        f"💎 مبروك لأعضاء VIP! تم تأمين الأرباح ونقل وقف الخسارة إلى نقطة الدخول."
+                    )
+                    send_telegram_msg(VIP_CHANNEL_ID, alert)
+                    send_telegram_msg(PUBLIC_PROMO_CHANNEL, f"🎯 *TARGET 1 HIT ON #{symbol} (+1.5%)* ✅\nJoin VIP to get full real-time entries & targets!")
+
+                elif current_price <= tp2:
+                    cursor.execute("UPDATE active_trades SET status = 'COMPLETED' WHERE id = ?", (t_id,))
+                    conn.commit()
+                    alert = (
+                        f"🚀 *TARGET 2 DESTROYED! | تم تحقيق جميع الأهداف* 🚀\n"
+                        f"━━━━━━━━━━━━━━━━━━━━━━\n"
+                        f"🪙 *العملة:* `#{symbol}` (بيع / SHORT)\n"
+                        f"💵 *سعر الدخول:* `${entry:,.4f}`\n"
+                        f"🎯 *الهدف الثاني:* `${tp2:,.4f}` (+3.00% Full Profit)\n"
+                        f"━━━━━━━━━━━━━━━━━━━━━━\n"
+                        f"💰 إغلاق الصفقة بنجاح تام وأرباح استثنائية لأعضاء VIP!"
+                    )
+                    send_telegram_msg(VIP_CHANNEL_ID, alert)
+                    send_telegram_msg(PUBLIC_PROMO_CHANNEL, f"🚀 *ALL TARGETS HIT ON #{symbol} (+3.0%)* 🔥\nAutomated Whale Radar precision!")
+
+                elif current_price >= sl and status == 'OPEN':
+                    cursor.execute("UPDATE active_trades SET status = 'STOPPED' WHERE id = ?", (t_id,))
+                    conn.commit()
+
+        conn.close()
+    except Exception as e:
+        logger.error(f"Error checking active trades: {e}")
+
+# ==============================================================================
+# 8. محرك رصد الصفقات والإشارات
+# ==============================================================================
 def evaluate_symbol_breakout(symbol: str):
     now = time.time()
     if now - COOLDOWN_TRACKER.get(symbol, 0) < COOLDOWN_PERIOD_SECONDS:
@@ -306,6 +436,7 @@ def evaluate_symbol_breakout(symbol: str):
         current_utc = datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S')
 
         if curr_close >= curr_open:
+            direction_code = "LONG"
             action_type = "🟢 صفقة شراء / صعود حيتان (LONG PUMP)"
             promo_action = "🟢 BULLISH WHALE INFLOW"
             sentiment_tag = "تجميع مؤسساتي قوي"
@@ -313,6 +444,7 @@ def evaluate_symbol_breakout(symbol: str):
             tp2 = curr_close * 1.030
             sl  = curr_close * 0.988
         else:
+            direction_code = "SHORT"
             action_type = "🔴 صفقة بيع / تصريف حيتان (SHORT DUMP)"
             promo_action = "🔴 BEARISH WHALE OUTFLOW"
             sentiment_tag = "ضغط تصريف بيعي"
@@ -320,7 +452,9 @@ def evaluate_symbol_breakout(symbol: str):
             tp2 = curr_close * 0.970
             sl  = curr_close * 1.012
 
-        # توليد الشارت
+        # تسجيل الصفقة لتتبع الأرباح تلقائياً
+        record_trade(symbol, direction_code, curr_close, tp1, tp2, sl)
+
         chart_buffer = generate_chart_image(symbol, klines, curr_close, tp1, tp2, sl)
 
         vip_signal = (
@@ -364,7 +498,6 @@ def evaluate_symbol_breakout(symbol: str):
             f"#Crypto #WhaleAlert #Binance #{symbol.replace('USDT', '')}"
         )
 
-        # إرسال الشارت في قناة VIP مع الإشارة
         vip_sent = send_telegram_photo(VIP_CHANNEL_ID, chart_buffer, vip_signal)
         promo_sent = send_telegram_msg(PUBLIC_PROMO_CHANNEL, promo_signal)
 
@@ -373,25 +506,31 @@ def evaluate_symbol_breakout(symbol: str):
             logger.info(f"Signal broadcasted successfully for {symbol}")
 
 # ==============================================================================
-# 7. محرك الفحص المستمر
+# 9. محرك الفحص المستمر وتتبع الأسعار
 # ==============================================================================
 def start_continuous_scanner():
     logger.info("🚀 Background Scanner Thread Started Successfully")
     time.sleep(3)
-    send_telegram_msg(VIP_CHANNEL_ID, "🟢 *نظام رادار الحيتان متصل مع محرك الشارتات البصرية التلقائي بنجاح!*")
+    send_telegram_msg(VIP_CHANNEL_ID, "🟢 *نظام رادار الحيتان متصل مع محرك تتبع الأرباح (TP/SL) التلقائي بنجاح!*")
 
     while True:
         try:
+            # جلب كل الأسعار الحالية مرة واحدة لمطابقة الأهداف بسرعة
+            prices = fetch_current_prices()
+            if prices:
+                check_active_trades(prices)
+
             for pair in WATCHLIST:
                 evaluate_symbol_breakout(pair)
                 time.sleep(0.5)
-            time.sleep(25)
+
+            time.sleep(20)
         except Exception as global_err:
             logger.critical(f"Scanner error: {global_err}", exc_info=True)
             time.sleep(10)
 
 # ==============================================================================
-# 8. واجهة الويب (Flask App)
+# 10. واجهة الويب (Flask App)
 # ==============================================================================
 app = Flask(__name__)
 
@@ -438,7 +577,7 @@ HTML_TEMPLATE = """
         <div class="features">
             <div class="feature-item"><span>✓</span> 15m Institutional Volume Breakout Detection</div>
             <div class="feature-item"><span>✓</span> Automated Visual Candlestick & Volume Charts</div>
-            <div class="feature-item"><span>✓</span> Automated Entry, TP1 (+1.5%), TP2 (+3%) & Stop Loss</div>
+            <div class="feature-item"><span>✓</span> Automated Target Tracking & Profit Hit Alerts</div>
             <div class="feature-item"><span>✓</span> Instant Automated VIP Channel Access</div>
         </div>
 
@@ -548,7 +687,7 @@ def verify_payment():
     return jsonify({"success": True, "invite_link": invite_url}), 200
 
 # ==============================================================================
-# 9. التشغيل التلقائي
+# 11. التشغيل التلقائي
 # ==============================================================================
 init_db()
 
