@@ -6,7 +6,7 @@ import json
 import logging
 import threading
 import sqlite3
-from datetime import datetime.now(timezone.utc),timedelta
+from datetime import datetime, timedelta
 import requests
 
 import matplotlib
