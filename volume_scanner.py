@@ -1,11 +1,17 @@
 import os
 import sys
+import io
 import time
 import logging
 import threading
 import sqlite3
 from datetime import datetime, timedelta
 import requests
+
+import matplotlib
+matplotlib.use('Agg')  # للرسم في الخلفية على السيرفر دون الحاجة لشاشة
+import matplotlib.pyplot as plt
+
 from flask import Flask, request, render_template_string, jsonify
 
 # ==============================================================================
@@ -98,7 +104,56 @@ def add_subscriber(user_handle: str, tx_id: str, days: int = 30) -> bool:
         return False
 
 # ==============================================================================
-# 4. محرك تيليجرام والروابط الآلية
+# 4. محرك رسم الشارت الفوري (Chart Generation)
+# ==============================================================================
+def generate_chart_image(symbol: str, klines: list, entry_price: float, tp1: float, tp2: float, sl: float) -> io.BytesIO:
+    """رسم شارت الشموع والفوليوم مع خطوط الأهداف بالكامل في الذاكرة"""
+    recent_klines = klines[-15:]  # آخر 15 شمعة
+    opens = [float(k[1]) for k in recent_klines]
+    highs = [float(k[2]) for k in recent_klines]
+    lows = [float(k[3]) for k in recent_klines]
+    closes = [float(k[4]) for k in recent_klines]
+    volumes = [float(k[5]) for k in recent_klines]
+
+    fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(8, 6), gridspec_kw={'height_ratios': [3, 1]})
+    fig.patch.set_facecolor('#0f172a')
+    ax1.set_facecolor('#0f172a')
+    ax2.set_facecolor('#0f172a')
+
+    # رسم الشموع
+    for i in range(len(recent_klines)):
+        color = '#00e676' if closes[i] >= opens[i] else '#ff1744'
+        ax1.plot([i, i], [lows[i], highs[i]], color=color, linewidth=1.2)
+        body_bottom = min(opens[i], closes[i])
+        body_height = max(abs(closes[i] - opens[i]), 0.00001)
+        ax1.bar(i, body_height, bottom=body_bottom, color=color, width=0.6, align='center')
+        ax2.bar(i, volumes[i], color=color, width=0.6, alpha=0.85, align='center')
+
+    # رسم خطوط التداول
+    ax1.axhline(entry_price, color='#ffeb3b', linestyle='--', linewidth=1.5, label=f'Entry: {entry_price:.4f}')
+    ax1.axhline(tp1, color='#00e676', linestyle=':', linewidth=1.3, label=f'TP1: {tp1:.4f}')
+    ax1.axhline(tp2, color='#00b0ff', linestyle=':', linewidth=1.3, label=f'TP2: {tp2:.4f}')
+    ax1.axhline(sl, color='#f44336', linestyle='--', linewidth=1.3, label=f'SL: {sl:.4f}')
+
+    # تنسيق الرسم البياني
+    ax1.set_title(f"Whale Radar Alert: #{symbol} (15m)", color='#ffffff', fontsize=12, fontweight='bold')
+    ax1.tick_params(colors='#94a3b8')
+    ax1.grid(True, color='#1e293b', linestyle='-', alpha=0.6)
+    ax1.legend(loc='upper left', facecolor='#1e293b', edgecolor='none', labelcolor='#ffffff', fontsize=8)
+
+    ax2.set_ylabel('Volume', color='#94a3b8', fontsize=9)
+    ax2.tick_params(colors='#94a3b8')
+    ax2.grid(True, color='#1e293b', linestyle='-', alpha=0.4)
+
+    plt.tight_layout()
+    buf = io.BytesIO()
+    plt.savefig(buf, format='png', facecolor=fig.get_facecolor(), edgecolor='none', dpi=120)
+    plt.close(fig)
+    buf.seek(0)
+    return buf
+
+# ==============================================================================
+# 5. محرك إرسال التيليجرام والروابط الآلية
 # ==============================================================================
 def send_telegram_msg(target_chat, message_payload: str) -> bool:
     payload = {
@@ -113,13 +168,25 @@ def send_telegram_msg(target_chat, message_payload: str) -> bool:
             res = requests.post(endpoint, json=payload, timeout=10)
             if res.status_code == 200:
                 return True
-            logger.warning(f"Telegram API status {res.status_code}: {res.text}")
         except Exception as err:
             logger.error(f"Telegram error: {err}")
     return False
 
+def send_telegram_photo(target_chat, photo_buffer: io.BytesIO, caption: str) -> bool:
+    for token in BOT_TOKENS:
+        endpoint = f"https://api.telegram.org/bot{token}/sendPhoto"
+        try:
+            photo_buffer.seek(0)
+            files = {"photo": ("chart.png", photo_buffer, "image/png")}
+            data = {"chat_id": target_chat, "caption": caption, "parse_mode": "Markdown"}
+            res = requests.post(endpoint, files=files, data=data, timeout=15)
+            if res.status_code == 200:
+                return True
+        except Exception as err:
+            logger.error(f"Telegram photo error: {err}")
+    return False
+
 def create_vip_invite_link() -> str:
-    # إنشاء رابط استخدام لمرة واحدة صالح لمدة 24 ساعة
     expire_timestamp = int(time.time()) + 86400
     payload = {
         "chat_id": VIP_CHANNEL_ID,
@@ -140,7 +207,7 @@ def create_vip_invite_link() -> str:
 def monitor_expirations_loop():
     while True:
         try:
-            time.sleep(3600)  # فحص كل ساعة
+            time.sleep(3600)
             conn = sqlite3.connect(DB_FILE)
             cursor = conn.cursor()
             now_str = datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S')
@@ -158,7 +225,7 @@ def monitor_expirations_loop():
             time.sleep(60)
 
 # ==============================================================================
-# 5. تحليل المؤشرات وبيانات بينانس
+# 6. تحليل المؤشرات وبيانات بينانس
 # ==============================================================================
 def calculate_rsi(klines, period=14):
     if len(klines) < period + 1:
@@ -182,13 +249,12 @@ def calculate_rsi(klines, period=14):
     rs = avg_gain / avg_loss
     return round(100.0 - (100.0 / (1.0 + rs)), 1)
 
-def fetch_binance_klines(symbol: str, interval: str = "15m", limit: int = 20):
+def fetch_binance_klines(symbol: str, interval: str = "15m", limit: int = 25):
     params = {"symbol": symbol, "interval": interval, "limit": limit}
     try:
         res = requests.get(BINANCE_KLINES_URL, params=params, headers=HEADERS, timeout=10)
         if res.status_code == 200:
             return res.json()
-        logger.error(f"Binance API returned code {res.status_code} for {symbol}")
     except Exception as e:
         logger.error(f"Binance connection failed for {symbol}: {e}")
     return None
@@ -212,7 +278,7 @@ def evaluate_symbol_breakout(symbol: str):
     if now - COOLDOWN_TRACKER.get(symbol, 0) < COOLDOWN_PERIOD_SECONDS:
         return
 
-    klines = fetch_binance_klines(symbol, interval=TIMEFRAME, limit=18)
+    klines = fetch_binance_klines(symbol, interval=TIMEFRAME, limit=20)
     if not klines or len(klines) < 16:
         return
 
@@ -253,6 +319,9 @@ def evaluate_symbol_breakout(symbol: str):
             tp1 = curr_close * 0.985
             tp2 = curr_close * 0.970
             sl  = curr_close * 1.012
+
+        # توليد الشارت
+        chart_buffer = generate_chart_image(symbol, klines, curr_close, tp1, tp2, sl)
 
         vip_signal = (
             f"🚨 *WHALE VOLUME INJECTION DETECTED* 🚨\n"
@@ -295,7 +364,8 @@ def evaluate_symbol_breakout(symbol: str):
             f"#Crypto #WhaleAlert #Binance #{symbol.replace('USDT', '')}"
         )
 
-        vip_sent = send_telegram_msg(VIP_CHANNEL_ID, vip_signal)
+        # إرسال الشارت في قناة VIP مع الإشارة
+        vip_sent = send_telegram_photo(VIP_CHANNEL_ID, chart_buffer, vip_signal)
         promo_sent = send_telegram_msg(PUBLIC_PROMO_CHANNEL, promo_signal)
 
         if vip_sent or promo_sent:
@@ -303,12 +373,12 @@ def evaluate_symbol_breakout(symbol: str):
             logger.info(f"Signal broadcasted successfully for {symbol}")
 
 # ==============================================================================
-# 6. محرك الفحص المستمر
+# 7. محرك الفحص المستمر
 # ==============================================================================
 def start_continuous_scanner():
     logger.info("🚀 Background Scanner Thread Started Successfully")
     time.sleep(3)
-    send_telegram_msg(VIP_CHANNEL_ID, "🟢 *نظام رادار الحيتان متصل ومحدث مع نظام أتمتة المشتركين بنجاح!*")
+    send_telegram_msg(VIP_CHANNEL_ID, "🟢 *نظام رادار الحيتان متصل مع محرك الشارتات البصرية التلقائي بنجاح!*")
 
     while True:
         try:
@@ -321,7 +391,7 @@ def start_continuous_scanner():
             time.sleep(10)
 
 # ==============================================================================
-# 7. واجهة الويب (Flask App)
+# 8. واجهة الويب (Flask App)
 # ==============================================================================
 app = Flask(__name__)
 
@@ -367,8 +437,8 @@ HTML_TEMPLATE = """
         
         <div class="features">
             <div class="feature-item"><span>✓</span> 15m Institutional Volume Breakout Detection</div>
+            <div class="feature-item"><span>✓</span> Automated Visual Candlestick & Volume Charts</div>
             <div class="feature-item"><span>✓</span> Automated Entry, TP1 (+1.5%), TP2 (+3%) & Stop Loss</div>
-            <div class="feature-item"><span>✓</span> RSI Momentum & 24hr Context Filters</div>
             <div class="feature-item"><span>✓</span> Instant Automated VIP Channel Access</div>
         </div>
 
@@ -455,12 +525,10 @@ def verify_payment():
     if not tg_user or not tx_id:
         return jsonify({"success": False, "error": "Missing Contact or Transaction ID"}), 400
 
-    # تسجيل المشترك في قاعدة البيانات لمدة 30 يوماً
     db_success = add_subscriber(tg_user, tx_id, days=30)
     if not db_success:
         return jsonify({"success": False, "error": "This Transaction ID has already been registered."}), 400
 
-    # توليد رابط دعوة لمرة واحدة خاص بالمشترك
     invite_url = create_vip_invite_link()
     if not invite_url:
         invite_url = "https://t.me/+WhaleScannerSupport"
@@ -480,7 +548,7 @@ def verify_payment():
     return jsonify({"success": True, "invite_link": invite_url}), 200
 
 # ==============================================================================
-# 8. التشغيل التلقائي
+# 9. التشغيل التلقائي
 # ==============================================================================
 init_db()
 
