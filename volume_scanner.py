@@ -196,18 +196,24 @@ def send_telegram_msg(target_chat, message_payload: str) -> bool:
         "chat_id": target_chat,
         "text": message_payload,
         "parse_mode": "Markdown",
-        "disable_web_page_preview": True,
-        "reply_markup": get_webapp_keyboard()
+        "disable_web_page_preview": True
     }
+    # نرفق زر التطبيق فقط إذا لم تكن الرسالة تنبيهاً داخلياً للإقلاع
+    if "متصل" not in message_payload:
+        payload["reply_markup"] = get_webapp_keyboard()
+
     for token in BOT_TOKENS:
         endpoint = f"https://api.telegram.org/bot{token}/sendMessage"
         try:
             res = requests.post(endpoint, json=payload, timeout=10)
             if res.status_code == 200:
                 return True
+            else:
+                logger.error(f"Telegram returned status {res.status_code}: {res.text}")
         except Exception as err:
             logger.error(f"Telegram error: {err}")
     return False
+
 
 def send_telegram_photo(target_chat, photo_buffer: io.BytesIO, caption: str) -> bool:
     import json
