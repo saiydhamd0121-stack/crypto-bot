@@ -467,9 +467,32 @@ def check_active_trades(prices_dict):
         conn.close()
     except Exception as e:
         logger.error(f"Error checking active trades: {e}")
+# ==============================================================================
+# دالة فلتر اتجاه البيتكوين العام لحماية الصفقات
+# ==============================================================================
+def get_btc_market_bias() -> str:
+    """تحديد الاتجاه العام للبيتكوين: BULLISH, BEARISH, أو NEUTRAL"""
+    try:
+        btc_klines = fetch_binance_klines("BTCUSDT", interval="15m", limit=10)
+        if not btc_klines or len(btc_klines) < 5:
+            return "NEUTRAL"
+
+        curr_candle = btc_klines[-1]
+        c_open = float(curr_candle[1])
+        c_close = float(curr_candle[4])
+        change_pct = ((c_close - c_open) / c_open) * 100.0
+
+        if change_pct >= 0.25:
+            return "BULLISH"
+        elif change_pct <= -0.25:
+            return "BEARISH"
+        return "NEUTRAL"
+    except Exception as e:
+        logger.error(f"Error fetching BTC bias: {e}")
+        return "NEUTRAL"
 
 # ==============================================================================
-# 8. محرك رصد الصفقات والإشارات
+# دالة تقييم الفرص بعد تطبيق فلتر الاتجاه
 # ==============================================================================
 def evaluate_symbol_breakout(symbol: str):
     now = time.time()
@@ -500,6 +523,16 @@ def evaluate_symbol_breakout(symbol: str):
     price_change_pct = ((curr_close - curr_open) / curr_open) * 100.0
 
     if volume_ratio >= VOLUME_THRESHOLD_MULTIPLIER and abs(price_change_pct) >= MINIMUM_PRICE_CHANGE_PCT:
+        # فحص اتجاه البيتكوين قبل اعتماد الصفقة (باستثناء البيتكوين نفسه)
+        if symbol != "BTCUSDT":
+            btc_bias = get_btc_market_bias()
+            if curr_close >= curr_open and btc_bias == "BEARISH":
+                logger.info(f"🚫 [FILTERED] Skipping LONG on {symbol} due to Bearish BTC trend.")
+                return
+            if curr_close < curr_open and btc_bias == "BULLISH":
+                logger.info(f"🚫 [FILTERED] Skipping SHORT on {symbol} due to Bullish BTC trend.")
+                return
+
         extra_stats = fetch_24hr_context(symbol)
         current_utc = datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S')
 
@@ -507,7 +540,7 @@ def evaluate_symbol_breakout(symbol: str):
             direction_code = "LONG"
             action_type = "🟢 صفقة شراء / صعود حيتان (LONG PUMP)"
             promo_action = "🟢 BULLISH WHALE INFLOW"
-            sentiment_tag = "تجميع مؤسساتي قوي"
+            sentiment_tag = "تجميع مؤسساتي متوافق مع السوق"
             tp1 = curr_close * 1.015
             tp2 = curr_close * 1.030
             sl  = curr_close * 0.988
@@ -515,7 +548,7 @@ def evaluate_symbol_breakout(symbol: str):
             direction_code = "SHORT"
             action_type = "🔴 صفقة بيع / تصريف حيتان (SHORT DUMP)"
             promo_action = "🔴 BEARISH WHALE OUTFLOW"
-            sentiment_tag = "ضغط تصريف بيعي"
+            sentiment_tag = "ضغط تصريف متوافق مع السوق"
             tp1 = curr_close * 0.985
             tp2 = curr_close * 0.970
             sl  = curr_close * 1.012
@@ -570,6 +603,7 @@ def evaluate_symbol_breakout(symbol: str):
         if vip_sent or promo_sent:
             COOLDOWN_TRACKER[symbol] = now
             logger.info(f"Signal broadcasted successfully for {symbol}")
+
 
 # ==============================================================================
 # 9. محرك الفحص المستمر وتتبع الأسعار
