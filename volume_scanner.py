@@ -64,9 +64,7 @@ MINIMUM_PRICE_CHANGE_PCT = 0.18
 COOLDOWN_PERIOD_SECONDS = 600
 TIMEFRAME = "15m"
 
-# حد التصفية المعتمد للتنبيه (50,000 دولار فأكثر)
 MIN_LIQUIDATION_USD = 50000.0
-
 COOLDOWN_TRACKER = {}
 
 # ==============================================================================
@@ -252,7 +250,7 @@ def monitor_expirations_loop():
             time.sleep(60)
 
 # ==============================================================================
-# 6. محرك رصد تصفيات العقود الآجلة اللحظي (Futures Liquidations Engine)
+# 6. محرك رصد تصفيات العقود الآجلة اللحظي (Futures Liquidations)
 # ==============================================================================
 def on_liquidation_message(ws, message):
     try:
@@ -261,7 +259,7 @@ def on_liquidation_message(ws, message):
         if symbol not in WATCHLIST:
             return
 
-        side = data.get('S')  # BUY (تصفية صفقة بيع) أو SELL (تصفية صفقة شراء)
+        side = data.get('S')
         qty = float(data.get('q', 0.0))
         price = float(data.get('p', 0.0))
         total_usd = qty * price
@@ -289,14 +287,10 @@ def on_liquidation_message(ws, message):
         logger.error(f"Liquidation stream error: {err}")
 
 def start_liquidation_listener():
-    # اتصال دائم ببث تصفيات بينانس
     ws_url = "wss://fstream.binance.com/ws/!forceOrder@arr"
     while True:
         try:
-            ws = websocket.WebSocketApp(
-                ws_url,
-                on_message=on_liquidation_message
-            )
+            ws = websocket.WebSocketApp(ws_url, on_message=on_liquidation_message)
             ws.run_forever()
         except Exception as e:
             logger.error(f"Liquidation WebSocket disconnected: {e}. Reconnecting...")
@@ -558,7 +552,7 @@ def evaluate_symbol_breakout(symbol: str):
 def start_continuous_scanner():
     logger.info("🚀 Background Scanner Thread Started Successfully")
     time.sleep(3)
-    send_telegram_msg(VIP_CHANNEL_ID, "🟢 *نظام رادار الحيتان متصل مع محرك رصد التصفيات (Liquidations Engine) بنجاح!*")
+    send_telegram_msg(VIP_CHANNEL_ID, "🟢 *نظام رادار الحيتان متصل مع تطبيق Telegram Mini-App بنجاح!*")
 
     while True:
         try:
@@ -576,11 +570,11 @@ def start_continuous_scanner():
             time.sleep(10)
 
 # ==============================================================================
-# 10. واجهة الويب (Flask App)
+# 10. واجهات الويب وتطبيق التيليجرام المصغر (Mini-App & Landing Page)
 # ==============================================================================
 app = Flask(__name__)
 
-HTML_TEMPLATE = """
+LANDING_PAGE_HTML = """
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -623,7 +617,7 @@ HTML_TEMPLATE = """
         <div class="features">
             <div class="feature-item"><span>✓</span> Real-Time Futures Liquidation Alerts (Short/Long Squeeze)</div>
             <div class="feature-item"><span>✓</span> 15m Institutional Volume Breakout Detection</div>
-            <div class="feature-item"><span>✓</span> Automated Visual Candlestick & Volume Charts</div>
+            <div class="feature-item"><span>✓</span> Interactive Telegram Mini-App Dashboard</div>
             <div class="feature-item"><span>✓</span> Automated Target Tracking & Profit Hit Alerts</div>
             <div class="feature-item"><span>✓</span> Instant Automated VIP Channel Access</div>
         </div>
@@ -698,9 +692,132 @@ HTML_TEMPLATE = """
 </html>
 """
 
+MINI_APP_HTML = """
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>Whale Radar App</title>
+    <script src="https://telegram.org/js/telegram-web-app.js"></script>
+    <style>
+        * { box-sizing: border-box; margin: 0; padding: 0; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; }
+        body { background: #090d16; color: #e2e8f0; padding: 16px; }
+        .header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px; }
+        .logo { font-size: 20px; font-weight: 800; color: #f0b90b; display: flex; align-items: center; gap: 8px; }
+        .pulse { width: 10px; height: 10px; background: #00d26a; border-radius: 50%; box-shadow: 0 0 10px #00d26a; }
+        .stats-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-bottom: 20px; }
+        .stat-card { background: #131b2e; border: 1px solid #1e293b; border-radius: 12px; padding: 14px; text-align: center; }
+        .stat-title { font-size: 11px; color: #8da2c0; text-transform: uppercase; margin-bottom: 4px; }
+        .stat-val { font-size: 18px; font-weight: 700; color: #ffffff; }
+        .section-title { font-size: 14px; font-weight: 700; color: #8da2c0; text-transform: uppercase; margin-bottom: 12px; }
+        .trade-card { background: #131b2e; border: 1px solid #1e293b; border-radius: 12px; padding: 14px; margin-bottom: 12px; }
+        .trade-top { display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px; }
+        .trade-pair { font-size: 16px; font-weight: 700; color: #fff; }
+        .tag-long { background: rgba(0, 210, 106, 0.15); color: #00d26a; font-size: 11px; padding: 3px 8px; border-radius: 6px; font-weight: bold; }
+        .tag-short { background: rgba(255, 77, 77, 0.15); color: #ff4d4d; font-size: 11px; padding: 3px 8px; border-radius: 6px; font-weight: bold; }
+        .trade-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; font-size: 12px; color: #94a3b8; }
+        .trade-grid span { color: #f0f4f8; font-weight: 600; }
+        .status-badge { display: inline-block; font-size: 11px; font-weight: bold; padding: 3px 8px; border-radius: 6px; margin-top: 10px; }
+        .status-open { background: #1e293b; color: #f0b90b; }
+        .status-hit { background: rgba(0, 210, 106, 0.2); color: #00d26a; }
+        .refresh-btn { width: 100%; padding: 12px; background: #1e293b; color: #f0b90b; font-weight: 700; border: 1px solid #2d3748; border-radius: 8px; margin-top: 10px; cursor: pointer; }
+    </style>
+</head>
+<body>
+    <div class="header">
+        <div class="logo"><div class="pulse"></div> Whale Radar</div>
+        <div style="font-size: 12px; color: #00d26a; font-weight: bold;">● LIVE FEED</div>
+    </div>
+
+    <div class="stats-grid">
+        <div class="stat-card">
+            <div class="stat-title">Tracked Pairs</div>
+            <div class="stat-val">12 Assets</div>
+        </div>
+        <div class="stat-card">
+            <div class="stat-title">Engine Timeframe</div>
+            <div class="stat-val">15m Breakout</div>
+        </div>
+    </div>
+
+    <div class="section-title">Institutional Signals Monitor</div>
+    <div id="tradesContainer">Loading signals...</div>
+
+    <button class="refresh-btn" onclick="loadTrades()">🔄 Refresh Live Signals</button>
+
+    <script>
+        const tg = window.Telegram ? window.Telegram.WebApp : null;
+        if(tg) { tg.expand(); }
+
+        async function loadTrades() {
+            const container = document.getElementById('tradesContainer');
+            try {
+                const res = await fetch('/api/live_trades');
+                const data = await res.json();
+                if(data.trades && data.trades.length > 0) {
+                    container.innerHTML = data.trades.map(t => `
+                        <div class="trade-card">
+                            <div class="trade-top">
+                                <span class="trade-pair">#${t.symbol}</span>
+                                <span class="${t.direction === 'LONG' ? 'tag-long' : 'tag-short'}">${t.direction}</span>
+                            </div>
+                            <div class="trade-grid">
+                                <div>Entry: <span>$${t.entry.toFixed(4)}</span></div>
+                                <div>Status: <span>${t.status}</span></div>
+                                <div>Target 1: <span>$${t.tp1.toFixed(4)}</span></div>
+                                <div>Target 2: <span>$${t.tp2.toFixed(4)}</span></div>
+                            </div>
+                            <div class="status-badge ${t.status === 'OPEN' ? 'status-open' : 'status-hit'}">
+                                ${t.status === 'OPEN' ? '⏳ Monitoring Targets' : '🎯 Profit Target Reached'}
+                            </div>
+                        </div>
+                    `).join('');
+                } else {
+                    container.innerHTML = `<div style="text-align:center; padding: 30px; color:#64748b; font-size:13px;">No active breakouts right now.<br>Engine scanning 24/7.</div>`;
+                }
+            } catch(e) {
+                container.innerHTML = `<div style="color:#ff4d4d; font-size:13px;">Failed to load data.</div>`;
+            }
+        }
+        loadTrades();
+        setInterval(loadTrades, 15000);
+    </script>
+</body>
+</html>
+"""
+
 @app.route('/')
 def home():
-    return render_template_string(HTML_TEMPLATE, wa_link=WHATSAPP_LINK)
+    return render_template_string(LANDING_PAGE_HTML, wa_link=WHATSAPP_LINK)
+
+@app.route('/app')
+def webapp_dashboard():
+    return render_template_string(MINI_APP_HTML)
+
+@app.route('/api/live_trades')
+def api_live_trades():
+    try:
+        conn = sqlite3.connect(DB_FILE)
+        cursor = conn.cursor()
+        cursor.execute("SELECT symbol, direction, entry_price, tp1, tp2, sl, status, created_at FROM active_trades ORDER BY id DESC LIMIT 10")
+        rows = cursor.fetchall()
+        conn.close()
+        trades = []
+        for r in rows:
+            trades.append({
+                "symbol": r[0],
+                "direction": r[1],
+                "entry": r[2],
+                "tp1": r[3],
+                "tp2": r[4],
+                "sl": r[5],
+                "status": r[6],
+                "time": r[7]
+            })
+        return jsonify({"success": True, "trades": trades})
+    except Exception as e:
+        return jsonify({"success": False, "error": str(e)}), 500
 
 @app.route('/api/verify', methods=['POST'])
 def verify_payment():
@@ -738,15 +855,12 @@ def verify_payment():
 # ==============================================================================
 init_db()
 
-# تشغيل فحص الشموع والأهداف
 scanner_thread = threading.Thread(target=start_continuous_scanner, daemon=True)
 scanner_thread.start()
 
-# تشغيل بث تصفيات العقود الآجلة اللحظي
 liquidation_thread = threading.Thread(target=start_liquidation_listener, daemon=True)
 liquidation_thread.start()
 
-# تشغيل فحص صلاحية المشتركين
 expiration_thread = threading.Thread(target=monitor_expirations_loop, daemon=True)
 expiration_thread.start()
 
