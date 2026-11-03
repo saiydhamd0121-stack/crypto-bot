@@ -191,28 +191,27 @@ def get_webapp_keyboard():
         ]
     }
 
-def send_telegram_msg(target_chat, message_payload: str) -> bool:
+def send_telegram_msg(chat_id, text, reply_markup=None):
+    if not TELEGRAM_BOT_TOKEN or not chat_id:
+        return
+    url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
     payload = {
-        "chat_id": target_chat,
-        "text": message_payload,
+        "chat_id": chat_id,
+        "text": text,
         "parse_mode": "Markdown",
-        "disable_web_page_preview": True
+        "disable_web_page_preview": False
     }
-    # نرفق زر التطبيق فقط إذا لم تكن الرسالة تنبيهاً داخلياً للإقلاع
-    if "متصل" not in message_payload:
-        payload["reply_markup"] = get_webapp_keyboard()
+    if reply_markup:
+        payload["reply_markup"] = reply_markup
+        
+    try:
+        res = requests.post(url, json=payload, timeout=10)
+        data = res.json()
+        if not data.get("ok"):
+            logger.error(f"Telegram error: {data}")
+    except Exception as e:
+        logger.error(f"Failed to send telegram message: {e}")
 
-    for token in BOT_TOKENS:
-        endpoint = f"https://api.telegram.org/bot{token}/sendMessage"
-        try:
-            res = requests.post(endpoint, json=payload, timeout=10)
-            if res.status_code == 200:
-                return True
-            else:
-                logger.error(f"Telegram returned status {res.status_code}: {res.text}")
-        except Exception as err:
-            logger.error(f"Telegram error: {err}")
-    return False
 
 
 def send_telegram_photo(target_chat, photo_buffer: io.BytesIO, caption: str) -> bool:
