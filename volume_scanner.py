@@ -15,7 +15,7 @@ import matplotlib.dates as mdates
 from flask import Flask, request, jsonify, render_template_string, redirect
 
 # ==============================================================================
-# 1. إعدادات السجلات (Logging)
+# [القسم 1]: إعداد السجلات ومراقبة النظام (Logging)
 # ==============================================================================
 logging.basicConfig(
     level=logging.INFO,
@@ -24,7 +24,7 @@ logging.basicConfig(
 logger = logging.getLogger("WhaleRadarUltimate")
 
 # ==============================================================================
-# 2. التكوين العام ومفاتيح البيئة
+# [القسم 2]: الإعدادات العامة ومفاتيح الربط (Configurations & Env Keys)
 # ==============================================================================
 TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "").strip()
 VIP_CHANNEL_ID = os.environ.get("VIP_CHANNEL_ID", "").strip()
@@ -46,12 +46,12 @@ WATCHLIST = [
 ]
 
 # ==============================================================================
-# 3. إعداد وإدارة قاعدة البيانات (SQLite)
+# [القسم 3]: قاعدة البيانات وإدارة الجداول (SQLite Database Engine)
 # ==============================================================================
 def init_database():
     conn = sqlite3.connect(DB_FILE)
     c = conn.cursor()
-    # جدول الصفقات والتنبيهات
+    # جدول الصفقات المفتوحة والمنتهية
     c.execute("""
         CREATE TABLE IF NOT EXISTS active_trades (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -65,7 +65,7 @@ def init_database():
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
     """)
-    # جدول المشتركين ومعاملات Binance Pay
+    # جدول المشتركين وإدارة مدفوعات بينانس
     c.execute("""
         CREATE TABLE IF NOT EXISTS subscribers (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -84,7 +84,7 @@ def init_database():
 init_database()
 
 # ==============================================================================
-# 4. محرك تيليجرام المتوافق مع القنوات (Telegram API Client)
+# [القسم 4]: محرك إرسال التيليجرام الآمن وروابط الدعوة (Telegram Safe Messenger)
 # ==============================================================================
 def send_telegram_msg(chat_id, text, buttons=None):
     if not TELEGRAM_BOT_TOKEN or not chat_id:
@@ -127,14 +127,13 @@ def send_telegram_photo(chat_id, caption, photo_path, buttons=None):
         logger.error(f"Failed to send photo: {e}")
 
 def generate_one_time_vip_link(channel_id):
-    """توليد رابط انضمام فريد لمرة واحدة مخصص للمشترك"""
     if not TELEGRAM_BOT_TOKEN or not channel_id:
         return None
     url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/createChatInviteLink"
     payload = {
         "chat_id": channel_id,
         "member_limit": 1,
-        "expire_date": int(time.time()) + 86400  # رابط صالح لـ 24 ساعة فقط للتفعيل
+        "expire_date": int(time.time()) + 86400
     }
     try:
         resp = requests.post(url, json=payload, timeout=10)
@@ -147,7 +146,7 @@ def generate_one_time_vip_link(channel_id):
     return None
 
 # ==============================================================================
-# 5. محرك تحليل بيانات بينانس وسياق السوق (Market Analysis Engine)
+# [القسم 5]: محرك تحليل بيانات السوق وفلتر البيتكوين (Market Bias & Klines)
 # ==============================================================================
 def fetch_binance_klines(symbol: str, interval: str = "15m", limit: int = 50):
     url = "https://api.binance.com/api/v3/klines"
@@ -179,7 +178,7 @@ def get_btc_market_bias() -> str:
         return "NEUTRAL"
 
 # ==============================================================================
-# 6. محرك توليد الشارتات الفنية التلقائي (Automated Charting)
+# [القسم 6]: محرك رسم الشارتات الفنية الآلي (Technical Auto-Chart Generator)
 # ==============================================================================
 def generate_signal_chart(symbol, klines, entry, tp1, tp2, sl, direction):
     filename = f"chart_{symbol}_{int(time.time())}.png"
@@ -213,7 +212,7 @@ def generate_signal_chart(symbol, klines, entry, tp1, tp2, sl, direction):
         return None
 
 # ==============================================================================
-# 7. محرك رصد الصفقات وتتبع الأهداف اللحظية (Trade Lifecycle)
+# [القسم 7]: فحص واقتناص صفقات كسر الفوليوم وتتبع الأهداف (Signal & TP/SL Tracker)
 # ==============================================================================
 def evaluate_symbol_breakout(symbol: str):
     klines = fetch_binance_klines(symbol, "15m", 30)
@@ -348,7 +347,7 @@ def monitor_trade_lifecycle():
         logger.error(f"Error checking trade lifecycle: {e}")
 
 # ==============================================================================
-# 8. محرك بث تصفيات الفيوتشرز اللحظي (Binance Liquidation Stream)
+# [القسم 8]: محرك بث تصفيات الفيوتشرز المباشر (Liquidation WebSocket Stream)
 # ==============================================================================
 def liquidation_websocket_worker():
     ws_endpoint = "wss://fstream.binance.com/ws/!forceOrder@arr"
@@ -362,7 +361,6 @@ def liquidation_websocket_worker():
             price = float(order.get('p', 0))
             usd_value = qty * price
 
-            # تنبيه للتصفيات الكبرى فوق 80,000 دولار
             if usd_value >= 80000:
                 liq_type = "🔴 تصفية شراء (Long Liquidation)" if side == "SELL" else "🟢 تصفية بيع (Short Squeeze)"
                 liq_msg = (
@@ -391,9 +389,51 @@ def liquidation_websocket_worker():
         time.sleep(5)
 
 # ==============================================================================
-# 9. محرك تقرير الأداء اليومي التلقائي (Automated Daily PnL Recap)
+# [القسم 9]: محركات التقارير الدورية (النبض الساعي + التقرير اليومي الشامل)
 # ==============================================================================
+def send_hourly_pulse_report():
+    """تقرير ملخص كل ساعة لإبقاء القنوات نشطة ومتابعة السوق"""
+    try:
+        conn = sqlite3.connect(DB_FILE)
+        c = conn.cursor()
+        c.execute("SELECT symbol, direction, entry_price, status FROM active_trades WHERE status IN ('OPEN', 'TP1_HIT')")
+        active_trades = c.fetchall()
+
+        one_hour_ago = (datetime.utcnow() - timedelta(hours=1)).strftime('%Y-%m-%d %H:%M:%S')
+        c.execute("SELECT symbol, direction, status FROM active_trades WHERE created_at >= ? AND status IN ('TP1_HIT', 'COMPLETED')", (one_hour_ago,))
+        recent_hits = c.fetchall()
+        conn.close()
+
+        bias = get_btc_market_bias()
+        time_str = datetime.utcnow().strftime('%H:00 UTC')
+
+        pulse_msg = (
+            f"⚡ *WHALE RADAR | النبض الساعي ({time_str})* ⚡\n"
+            f"━━━━━━━━━━━━━━━━━━━━━━\n"
+            f"🌐 *سياق البيتكوين العام:* `{bias}`\n"
+            f"🎯 *الأهداف المحققة في آخر ساعة:* `{len(recent_hits)} صفقات`\n"
+            f"📊 *الصفقات النشطة تحت المراقبة:* `{len(active_trades)}`\n"
+        )
+
+        if active_trades:
+            pulse_msg += "\n*الصفقات المفتوحة حالياً:*\n"
+            for t in active_trades[:5]:
+                pulse_msg += f"• `#{t[0]}` ({t[1]}) | الدخول: `{t[2]}` [{t[3]}]\n"
+
+        pulse_msg += (
+            f"━━━━━━━━━━━━━━━━━━━━━━\n"
+            f"📱 لمتابعة الصفقات الحية: [افتح لوحة التحكم]({APP_BASE_URL}/app)"
+        )
+
+        buttons = [[{"text": "📊 فتح لوحة التحكم | Mini-App", "url": f"{APP_BASE_URL}/app"}]]
+        send_telegram_msg(PUBLIC_PROMO_CHANNEL, pulse_msg, buttons)
+        send_telegram_msg(VIP_CHANNEL_ID, pulse_msg, buttons)
+        logger.info("Hourly pulse report sent successfully.")
+    except Exception as e:
+        logger.error(f"Hourly pulse error: {e}")
+
 def generate_and_send_daily_report():
+    """التقرير اليومي الشامل لحساب نسبة النجاح وصافي الأرباح كل 24 ساعة"""
     try:
         conn = sqlite3.connect(DB_FILE)
         cursor = conn.cursor()
@@ -427,12 +467,12 @@ def generate_and_send_daily_report():
         buttons = [[{"text": "🚀 اشترك الآن عبر الموقع", "url": APP_BASE_URL}]]
         send_telegram_msg(VIP_CHANNEL_ID, recap, buttons)
         send_telegram_msg(PUBLIC_PROMO_CHANNEL, recap, buttons)
-        logger.info("Daily performance recap broadcasted.")
+        logger.info("Daily performance recap sent successfully.")
     except Exception as e:
         logger.error(f"Daily report error: {e}")
 
 # ==============================================================================
-# 10. تطبيق الويب والمتجر ولوحة التحكم (Flask Web Server)
+# [القسم 10]: تطبيق الويب Flask، واجهة المشتركين، ولوحة Mini-App
 # ==============================================================================
 app = Flask(__name__)
 
@@ -461,22 +501,19 @@ INDEX_HTML = """
         <h1>🐋 رادار الحيتان المؤسسي</h1>
         <p style="color: #aaa;">منظومة الإشارات اللحظية وتتبع السيولة والتصفيات</p>
         <div class="price">10 USDT <span style="font-size: 0.9rem; color:#888;">/ شهرياً</span></div>
-        
         <div class="details">
             <div>• الدفع المباشر عبر <strong>Binance Pay</strong></div>
             <div>• معرّف المحفظة (Pay ID): <strong style="color: #ffcc00;">1284168199</strong></div>
             <div>• تفعيل فوري وتوليد رابط VIP آمن لمرة واحدة.</div>
         </div>
-
         <form action="/verify-payment" method="POST">
             <input type="text" name="customer_name" placeholder="اسمك أو يوزرك في تيليجرام" required><br>
             <input type="text" name="tx_id" placeholder="أدخل رقم العملية (TxID / Order ID)" required><br>
             <button type="submit">تأكيد الدفع واستلام الرابط</button>
         </form>
-
         <div class="footer-links">
             <a href="/app">📱 فتح لوحة التحكم المباشرة (Mini-App)</a><br><br>
-            💬 للتواصل والدعم الفني: <a href="https://wa.me/249119806108">واتساب</a> | <a href="https://t.me/python_automation1">تيليجرام</a>
+            💬 للتواصل والدعم: <a href="https://wa.me/249119806108">واتساب</a> | <a href="https://t.me/python_automation1">تيليجرام</a>
         </div>
     </div>
 </body>
@@ -550,7 +587,7 @@ def verify_payment():
     name = request.form.get('customer_name', '').strip()
 
     if not tx_id:
-        return "رقم المعاملة غير صالح", 400
+        return "رقم العملية غير صالح", 400
 
     conn = sqlite3.connect(DB_FILE)
     cur = conn.cursor()
@@ -561,7 +598,6 @@ def verify_payment():
         conn.close()
         return f"تم تفعيل اشتراكك سابقاً! رابط القناة: <a href='{row[2]}'>{row[2]}</a>"
 
-    # توليد رابط دعوة فوري للمشترك
     invite_link = generate_one_time_vip_link(VIP_CHANNEL_ID)
     if not invite_link:
         invite_link = "https://t.me/WhaleScanner_Alerts"
@@ -577,7 +613,6 @@ def verify_payment():
     finally:
         conn.close()
 
-    # إشعار الإدارة فورياً
     admin_alert = f"💰 *مشترك جديد تم تفعيله!* 💰\nالاسم: `{name}`\nالعملية: `{tx_id}`\nالرابط: {invite_link}"
     send_telegram_msg(VIP_CHANNEL_ID, admin_alert)
 
@@ -607,13 +642,18 @@ def admin_dashboard():
     html += "</table>"
     return html
 
+@app.route('/trigger-hourly')
+def trigger_hourly_endpoint():
+    send_hourly_pulse_report()
+    return jsonify({"status": "success", "message": "تم إرسال تقرير النبض الساعي بنجاح!"})
+
 @app.route('/trigger-report')
-def trigger_report():
+def trigger_report_endpoint():
     generate_and_send_daily_report()
-    return jsonify({"status": "success", "message": "تم إرسال التقرير اليومي بنجاح!"})
+    return jsonify({"status": "success", "message": "تم إرسال التقرير اليومي الشامل بنجاح!"})
 
 # ==============================================================================
-# 11. تشغيل الخيوط المستقلة (Background Threads Launcher)
+# [القسم 11]: حلقات الخيوط الخلفية وتفعيل المنظومة (Unified Background Scheduler)
 # ==============================================================================
 def background_scanner_loop():
     logger.info("Ultimate Whale Scanner loop started.")
@@ -627,20 +667,28 @@ def background_scanner_loop():
             logger.error(f"Error in scanner loop: {e}")
         time.sleep(20)
 
-def daily_report_scheduler():
+def unified_scheduler_loop():
+    hour_counter = 0
     while True:
         try:
-            time.sleep(86400)
-            generate_and_send_daily_report()
+            time.sleep(3600)  # انتظار 60 دقيقة
+            hour_counter += 1
+
+            send_hourly_pulse_report()
+
+            if hour_counter >= 24:
+                generate_and_send_daily_report()
+                hour_counter = 0
         except Exception as e:
-            logger.error(f"Daily scheduler error: {e}")
+            logger.error(f"Scheduler loop error: {e}")
             time.sleep(60)
 
-# تفعيل المهام الخلفية كخيوط منفصلة
+# تفعيل المهام كخيوط مستقلة
 threading.Thread(target=background_scanner_loop, daemon=True).start()
 threading.Thread(target=liquidation_websocket_worker, daemon=True).start()
-threading.Thread(target=daily_report_scheduler, daemon=True).start()
+threading.Thread(target=unified_scheduler_loop, daemon=True).start()
 
 if __name__ == '__main__':
     port = int(os.environ.get("PORT", 5000))
     app.run(host="0.0.0.0", port=port)
+
