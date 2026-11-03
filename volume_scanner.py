@@ -176,6 +176,65 @@ def get_btc_market_bias() -> str:
     except Exception as e:
         logger.error(f"Error checking BTC bias: {e}")
         return "NEUTRAL"
+        
+# ------------------------------------------------------------------------------
+# فلاتر التحليل المؤسسي المتقدم (CVD + Order Book Depth + Liquidity Sweep)
+# ------------------------------------------------------------------------------
+
+def check_cvd_confirmation(symbol: str, direction: str) -> bool:
+    """فحص الدلتا التراكمية ونسبة الشراء/البيع الحقيقية لتجنب الاختراق الوهمي"""
+    url = "https://fapi.binance.com/futures/data/takerlongshortRatio"
+    params = {"symbol": symbol, "period": "15m", "limit": 1}
+    try:
+        res = requests.get(url, params=params, timeout=5)
+        if res.status_code == 200:
+            data = res.json()
+            if data and len(data) > 0:
+                ratio = float(data[0].get("buySellRatio", 1.0))
+                # للشراء نطلب تفوق المشترين (> 1.15)، وللبيع نطلب تفوق البائعين (< 0.85)
+                if direction == "BUY" and ratio >= 1.10:
+                    return True
+                elif direction == "SELL" and ratio <= 0.90:
+                    return True
+                return False
+    except Exception as e:
+        logger.error(f"CVD check error [{symbol}]: {e}")
+    return True  # في حال تعثر الاتصال لا نوقف المحرك بالكامل
+
+def check_order_book_imbalance(symbol: str) -> float:
+    """فحص جدران الدعم والمقاومة المعلقة في دفتر أوامر بينانس"""
+    url = "https://api.binance.com/api/v3/depth"
+    params = {"symbol": symbol, "limit": 50}
+    try:
+        res = requests.get(url, params=params, timeout=5)
+        if res.status_code == 200:
+            depth = res.json()
+            bids = depth.get("bids", [])
+            asks = depth.get("asks", [])
+            total_bids = sum(float(b[1]) for b in bids)
+            total_asks = sum(float(a[1]) for a in asks)
+            return round(total_bids / total_asks if total_asks > 0 else 1.0, 2)
+    except Exception as e:
+        logger.error(f"Depth check error [{symbol}]: {e}")
+    return 1.0
+
+def detect_liquidity_sweep(klines):
+    """رصد كنس السيولة ومصائد القمم والقيعان (Bull / Bear Traps)"""
+    if len(klines) < 3:
+        return False, "NONE"
+    last = klines[-1]
+    prev = klines[-2]
+    
+    high, low, close = float(last[2]), float(last[3]), float(last[4])
+    prev_high, prev_low = float(prev[2]), float(prev[3])
+    
+    # كنس قمة وهمي ثم إغلاق هابط
+    if high > prev_high and close < prev_high:
+        return True, "BEARISH_TRAP"
+    # كنس قاع وهمي ثم إغلاق صاعد
+    if low < prev_low and close > prev_low:
+        return True, "BULLISH_TRAP"
+    return False, "CLEAN"
 
 # ==============================================================================
 # [القسم 6]: محرك رسم الشارتات الفنية الآلي (Technical Auto-Chart Generator)
@@ -233,10 +292,43 @@ def evaluate_symbol_breakout(symbol: str):
         bias = get_btc_market_bias()
         direction = "BUY" if price_change_pct > 0 else "SELL"
 
+                # فحص اتجاه البيتكوين
         if direction == "BUY" and bias == "BEARISH":
             return
         if direction == "SELL" and bias == "BULLISH":
             return
+
+        # 1. تفعيل فلتر الدلتا التراكمية (CVD)
+        if not check_cvd_confirmation(symbol, direction):
+            return
+
+        # 2. فحص كنس السيولة ومصائد السوق
+        has_trap, trap_type = detect_liquidity_sweep(klines)
+        if direction == "BUY" and trap_type == "BEARISH_TRAP":
+            return
+        if direction == "SELL" and trap_type == "BULLISH_TRAP":
+            return
+
+                # 1. تصفية الصفقات المعاكسة لاتجاه البيتكوين العام
+        if direction == "BUY" and bias == "BEARISH":
+            return
+        if direction == "SELL" and bias == "BULLISH":
+            return
+
+        # 2. فلتر الدلتا التراكمية (CVD) لتأكيد التدفق الحقيقي
+        if not check_cvd_confirmation(symbol, direction):
+            return
+
+        # 3. فحص مصائد كنس السيولة (Bull/Bear Traps)
+        has_trap, trap_type = detect_liquidity_sweep(klines)
+        if direction == "BUY" and trap_type == "BEARISH_TRAP":
+            return
+        if direction == "SELL" and trap_type == "BULLISH_TRAP":
+            return
+
+        # 4. حساب توازن دفتر الأوامر لإضافته للتقرير
+        book_ratio = check_order_book_imbalance(symbol)
+
 
         conn = sqlite3.connect(DB_FILE)
         cursor = conn.cursor()
