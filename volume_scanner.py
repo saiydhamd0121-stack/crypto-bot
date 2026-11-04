@@ -774,6 +774,10 @@ def unified_scheduler_loop():
         except Exception as e:
             logger.error(f"Scheduler loop error: {e}")
             time.sleep(60)
+# إشعار تشغيل السيرفر والتأكد من الاتصال
+startup_msg = "🟢 *Whale Radar Pro v3.0:* المنظومة تعمل الآن بكامل المحركات ومراقبة السيولة نشطة."
+send_telegram_msg(PUBLIC_PROMO_CHANNEL, startup_msg)
+send_telegram_msg(VIP_CHANNEL_ID, startup_msg)
 
 # تفعيل المهام كخيوط مستقلة
 threading.Thread(target=background_scanner_loop, daemon=True).start()
