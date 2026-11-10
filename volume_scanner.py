@@ -129,6 +129,7 @@ def generate_chart_url(symbol, klines, wall_price, tp_price):
 # ==============================================================================
 # 3. التحليل الكمي وحساب معايير التداول (OBI & Level-2 Metrics)
 # ==============================================================================
+
 def analyze_institutional_depth(symbol):
     try:
         res = fetch_binance(f"/api/v3/depth?symbol={symbol}&limit=50")
