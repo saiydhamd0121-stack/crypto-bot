@@ -5,26 +5,40 @@ import threading
 import requests
 from flask import Flask, request, jsonify
 
-# ==========================================
-# 1. إعدادات البيئة والخادم
-# ==========================================
 app = Flask(__name__)
 
 TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "")
 PUBLIC_PROMO_CHANNEL = os.environ.get("PUBLIC_PROMO_CHANNEL", "")
 VIP_CHANNEL_ID = os.environ.get("VIP_CHANNEL_ID", "")
 
-# قائمة الأزواج القيادية وعملات الزخم السريع (High-Volatility & Meme)
 SYMBOLS = [
     "BTCUSDT", "ETHUSDT", "SOLUSDT", "BNBUSDT", "XRPUSDT",
     "DOGEUSDT", "PEPEUSDT", "SHIBUSDT", "SUIUSDT", "AVAXUSDT"
 ]
 
-BINANCE_API_BASE = "https://api.binance.com"
+# نطاقات بينانس المفتوحة للسيرفرات السحابية مع هيدر متصفح لمنع الحظر
+BINANCE_URLS = [
+    "https://data-api.binance.vision",
+    "https://api1.binance.com",
+    "https://api3.binance.com"
+]
 
-# ==========================================
-# 2. محرك التيليجرام
-# ==========================================
+HEADERS = {
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+}
+
+def fetch_binance(endpoint):
+    """محاولة جلب البيانات عبر النطاقات المتاحة لتفادي حظر السيرفرات"""
+    for base in BINANCE_URLS:
+        try:
+            url = f"{base}{endpoint}"
+            r = requests.get(url, headers=HEADERS, timeout=4)
+            if r.status_code == 200:
+                return r.json()
+        except Exception:
+            continue
+    return None
+
 def send_telegram_msg(chat_id, text):
     if not TELEGRAM_BOT_TOKEN or not chat_id:
         return False
@@ -41,38 +55,33 @@ def send_telegram_msg(chat_id, text):
     except Exception:
         return False
 
-# ==========================================
-# 3. محرك التحليل الكمي للسيولة (OBI & CVD)
-# ==========================================
 def analyze_order_book(symbol):
-    """تحليل دفتر الطلبات لرصد اختلال السيولة (Order Book Imbalance)"""
     try:
-        url = f"{BINANCE_API_BASE}/api/v3/depth?symbol={symbol}&limit=50"
-        res = requests.get(url, timeout=5).json()
+        res = fetch_binance(f"/api/v3/depth?symbol={symbol}&limit=50")
+        if not res:
+            return 50.0, 0, 0
         bids = sum(float(b[1]) for b in res.get("bids", []))
         asks = sum(float(a[1]) for a in res.get("asks", []))
         total = bids + asks
         if total == 0:
             return 50.0, bids, asks
-        bid_ratio = (bids / total) * 100
-        return bid_ratio, bids, asks
+        return (bids / total) * 100, bids, asks
     except Exception:
         return 50.0, 0, 0
 
 def check_whale_trades(symbol):
-    """رصد الصفقات وتحديد التباعد الحجمي الماركت (Delta)"""
     try:
-        url = f"{BINANCE_API_BASE}/api/v3/trades?symbol={symbol}&limit=60"
-        trades = requests.get(url, timeout=5).json()
+        trades = fetch_binance(f"/api/v3/trades?symbol={symbol}&limit=60")
+        if not trades or not isinstance(trades, list):
+            return None
         
         buy_vol = 0.0
         sell_vol = 0.0
         huge_trades_count = 0
         last_price = 0.0
 
-        # خفض عتبة الحجم لعملات الميم والعملات البديلة لرصد صفقات الحيتان المناسبة لها
-        is_meme_or_alt = symbol in ["PEPEUSDT", "SHIBUSDT", "DOGEUSDT", "SUIUSDT", "AVAXUSDT"]
-        threshold = 20000 if is_meme_or_alt else 50000
+        is_alt = symbol in ["PEPEUSDT", "SHIBUSDT", "DOGEUSDT", "SUIUSDT"]
+        threshold = 20000 if is_alt else 50000
 
         for t in trades:
             price = float(t['price'])
@@ -80,7 +89,7 @@ def check_whale_trades(symbol):
             usd_val = price * qty
             last_price = price
 
-            if t['isBuyerMaker']:
+            if t.get('isBuyerMaker', False):
                 sell_vol += usd_val
             else:
                 buy_vol += usd_val
@@ -88,80 +97,54 @@ def check_whale_trades(symbol):
             if usd_val >= threshold:
                 huge_trades_count += 1
 
-        delta = buy_vol - sell_vol
         return {
             "symbol": symbol,
             "price": last_price,
             "buy_vol": buy_vol,
             "sell_vol": sell_vol,
-            "delta": delta,
+            "delta": buy_vol - sell_vol,
             "huge_trades": huge_trades_count
         }
     except Exception:
         return None
 
-# ==========================================
-# 4. حلقة المسح التلقائي المستمرة (24/7 Scanner)
-# ==========================================
 def market_scanner_loop():
-    time.sleep(12)
-    startup_alert = (
-        "⚡️ *Whale Radar Pro v3.0 | Multi-Asset Engine Activated*\n\n"
-        "▫️ *تم تفعيل تغطية السيولة المؤسسية والعملات السريعة*\n"
-        "▫️ قائمة الرصد: `BTC` | `ETH` | `SOL` | `BNB` | `XRP` | `DOGE` | `PEPE` | `SUI`\n"
-        "▫️ المحركات النشطة: `Order Book Imbalance (OBI)` + `CVD Delta Tracker`\n"
-        "▫️ حالة الاتصال: متصل ومستمر 24/7 على السحابة."
-    )
-    send_telegram_msg(VIP_CHANNEL_ID, startup_alert)
-    if PUBLIC_PROMO_CHANNEL != VIP_CHANNEL_ID:
-        send_telegram_msg(PUBLIC_PROMO_CHANNEL, startup_alert)
-
+    time.sleep(10)
     while True:
         try:
             for sym in SYMBOLS:
-                bid_ratio, bids, asks = analyze_order_book(sym)
+                bid_ratio, _, _ = analyze_order_book(sym)
                 data = check_whale_trades(sym)
 
                 if data and (bid_ratio >= 67.0 or bid_ratio <= 33.0 or data["huge_trades"] >= 2):
-                    direction = "🟢 ضغط شراء مؤسسي وتراكم طلبات (Bullish)" if bid_ratio >= 50 else "🔴 تفريغ جداري وضغط بيع ماركت (Bearish)"
-                    strength = "انفجارية عالية 🚨" if data["huge_trades"] >= 2 else "زخم متصاعد 📊"
-
-                    # تنسيق السعر بناءً على العملة (خاصة للأصفار الكثيرة مثل PEPE و SHIB)
+                    direction = "🟢 تراكم طلبات شراء مؤسسية (Bullish)" if bid_ratio >= 50 else "🔴 ضغط بيع وتفريغ جداري (Bearish)"
                     price_format = f"{data['price']:.8f}" if data['price'] < 0.01 else f"{data['price']:,.2f}"
 
                     alert_msg = (
                         f"🚨 *WHALE RADAR | تسارع سيولة استثنائي*\n\n"
                         f"🔹 *الأصل:* `#{data['symbol']}`\n"
                         f"🔹 *السعر اللحظي:* `${price_format}`\n"
-                        f"🔹 *القراءة الكمية:* {direction}\n\n"
-                        f"📈 *بيانات دفتر الطلبات والسيولة:*\n"
-                        f"▫️ نسبة قوة عروض الشراء: `{bid_ratio:.1f}%`\n"
-                        f"▫️ صافي دلتا الفوليوم التراكمي: `${data['delta']:,.0f}`\n"
-                        f"▫️ عدد الصفقات الكبرى المرصودة: `{data['huge_trades']}`\n"
-                        f"▫️ كثافة الزخم: *{strength}*\n\n"
-                        f"💡 *القراءة:* رصد جدار سيولة نشط يمنع الانزلاق السعري في هذا النطاق."
+                        f"🔹 *الاتجاه الكمي:* {direction}\n\n"
+                        f"📊 *بيانات دفتر الطلبات (Top 50 Depth):*\n"
+                        f"▫️ نسبة عروض الشراء: `{bid_ratio:.1f}%`\n"
+                        f"▫️ صافي دلتا الفوليوم: `${data['delta']:,.0f}`\n"
+                        f"▫️ صفقات الحيتان الخاطفة: `{data['huge_trades']}`\n"
                     )
-                    # إرسال التفاصيل لقناة VIP
                     send_telegram_msg(VIP_CHANNEL_ID, alert_msg)
-
-                    # إشعار تشويقي للقناة العامة
-                    public_msg = (
-                        f"⚡️ *رادار الحيتان رصد تسارع سيولة حاد على {data['symbol']}!*\n\n"
-                        f"▫️ السعر الحالي: `${price_format}`\n"
-                        f"▫️ صافي السيولة الماركت: `${data['delta']:,.0f}`\n"
-                        f"▫️ تحليل مستويات الدخول وجدران السيولة متاح الآن داخل قناة VIP.\n\n"
-                        f"👉 انضم للقناة الخاصة لتصلك التنبيهات لحظياً."
-                    )
-                    send_telegram_msg(PUBLIC_PROMO_CHANNEL, public_msg)
+                    if PUBLIC_PROMO_CHANNEL != VIP_CHANNEL_ID:
+                        public_msg = (
+                            f"⚡️ *رادار السيولة رصد حركة حوت على {data['symbol']}!*\n"
+                            f"▫️ السعر: `${price_format}`\n"
+                            f"▫️ صافي دلتا الفوليوم: `${data['delta']:,.0f}`\n\n"
+                            f"👉 التفاصيل الكاملة متوفرة داخل قناة VIP."
+                        )
+                        send_telegram_msg(PUBLIC_PROMO_CHANNEL, public_msg)
 
                 time.sleep(2)
         except Exception:
             pass
         time.sleep(25)
 
-# ==========================================
-# 5. نقاط الفحص واستدعاء النبض
-# ==========================================
 @app.route('/')
 def home():
     return jsonify({
@@ -172,27 +155,28 @@ def home():
 
 @app.route('/trigger-hourly')
 def trigger_manual():
-    sample_data = check_whale_trades("SOLUSDT")
-    bid_ratio, _, _ = analyze_order_book("SOLUSDT")
+    sample_data = check_whale_trades("BTCUSDT")
+    bid_ratio, _, _ = analyze_order_book("BTCUSDT")
     if sample_data:
         test_msg = (
-            f"📡 *فحص النبض الساعي | تقرير السيولة اللحظي*\n\n"
-            f"▫️ الزوج المفحوص: `SOLUSDT`\n"
-            f"▫️ السعر الحالي: `${sample_data['price']:,.2f}`\n"
-            f"▫️ سيطرة الشراء في الدفتر: `{bid_ratio:.1f}%`\n"
-            f"▫️ صافي دلتا الفوليوم: `${sample_data['delta']:,.0f}`\n\n"
-            f"✅ محرك المسح متعدد الأصول يعمل بكامل طاقته."
+            f"📡 *فحص النبض الساعي | تقرير السيولة المؤسسي*\n\n"
+            f"▫️ الأصل: `BTCUSDT`\n"
+            f"▫️ السعر اللحظي: `${sample_data['price']:,.2f}`\n"
+            f"▫️ نسبة هيمنة الشراء في الدفتر: `{bid_ratio:.1f}%`\n"
+            f"▫️ صافي تدفق الفوليوم (Delta): `${sample_data['delta']:,.0f}`\n\n"
+            f"✅ محرك البيانات تجاوز جدار الحماية بنجاح ويعمل 100%."
         )
-        send_telegram_msg(PUBLIC_PROMO_CHANNEL, test_msg)
-        return jsonify({"status": "success", "message": "Multi-asset pulse sent successfully"})
-    return jsonify({"status": "error", "message": "Failed to fetch Binance data"}), 500
+        res = send_telegram_msg(PUBLIC_PROMO_CHANNEL, test_msg)
+        return jsonify({
+            "status": "success",
+            "message": "Data fetched and alert dispatched",
+            "telegram_sent": res,
+            "btc_price": sample_data['price']
+        })
+    return jsonify({"status": "error", "message": "Failed to fetch from all endpoints"}), 500
 
-# ==========================================
-# 6. تشغيل المحرك
-# ==========================================
 scanner_thread = threading.Thread(target=market_scanner_loop, daemon=True)
 scanner_thread.start()
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=10000)
-
