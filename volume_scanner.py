@@ -45,21 +45,29 @@ def fetch_binance(endpoint):
     return None
 
 def send_telegram_photo(chat_id, photo_url, caption):
-    """إرسال بطاقة التحليل مع صورة الشارت والشرح المنسق"""
+    """تنزيل الشارت وإرساله كصورة فعلية لتفادي مشكلة طول الروابط في تيليجرام"""
     if not TELEGRAM_BOT_TOKEN or not chat_id:
         return False
-    url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendPhoto"
-    payload = {
-        "chat_id": chat_id,
-        "photo": photo_url,
-        "caption": caption,
-        "parse_mode": "Markdown"
-    }
     try:
-        r = requests.post(url, json=payload, timeout=12)
+        # تحميل بايتات الصورة مباشرة من QuickChart
+        img_resp = requests.get(photo_url, timeout=10)
+        if img_resp.status_code != 200:
+            return False
+
+        url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendPhoto"
+        files = {
+            'photo': ('chart.png', img_resp.content, 'image/png')
+        }
+        data = {
+            'chat_id': chat_id,
+            'caption': caption,
+            'parse_mode': 'Markdown'
+        }
+        r = requests.post(url, data=data, files=files, timeout=15)
         return r.json().get("ok", False)
     except Exception:
         return False
+
 
 def get_klines_data(symbol, interval="15m", limit=24):
     """جلب بيانات الشموع لرسم مسار السعر والسيولة"""
