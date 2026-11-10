@@ -146,12 +146,18 @@ def analyze_institutional_depth(symbol):
             return 50.0, 0.0, 0.0, (0.0, 0.0), (0.0, 0.0)
 
         bid_ratio = (bids_usd / total_usd) * 100
-        top_bid_wall = max((float(b[0]) * float(b[1]), float(b[0])) for b in bids) if bids else (0.0, 0.0)
-        top_ask_wall = max((float(a[0]) * float(a[1]), float(a[0])) for a in asks) if asks else (0.0, 0.0)
+
+        # استبعاد أول 3 مستويات لتفادي أخذ سعر الماركت اللحظي نفسه
+        filtered_bids = [b for b in bids[3:] if (float(b[0]) * float(b[1])) > 50000]
+        filtered_asks = [a for a in asks[3:] if (float(a[0]) * float(a[1])) > 50000]
+
+        top_bid_wall = max(((float(b[0]) * float(b[1])), float(b[0])) for b in filtered_bids) if filtered_bids else (0.0, 0.0)
+        top_ask_wall = max(((float(a[0]) * float(a[1])), float(a[0])) for a in filtered_asks) if filtered_asks else (0.0, 0.0)
 
         return bid_ratio, bids_usd, asks_usd, top_bid_wall, top_ask_wall
     except Exception:
         return 50.0, 0.0, 0.0, (0.0, 0.0), (0.0, 0.0)
+
 
 def track_order_flow(symbol):
     try:
