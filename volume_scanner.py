@@ -45,14 +45,12 @@ def fetch_binance(endpoint):
     return None
 
 def send_telegram_photo(chat_id, photo_url, caption):
-    """تنزيل الشارت وإرساله كصورة فعلية لتفادي مشكلة طول الروابط في تيليجرام"""
     if not TELEGRAM_BOT_TOKEN or not chat_id:
-        return False
+        return False, "Token or Chat ID is missing"
     try:
-        # تحميل بايتات الصورة مباشرة من QuickChart
         img_resp = requests.get(photo_url, timeout=10)
         if img_resp.status_code != 200:
-            return False
+            return False, f"Failed to download chart image, status code: {img_resp.status_code}"
 
         url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendPhoto"
         files = {
@@ -60,13 +58,42 @@ def send_telegram_photo(chat_id, photo_url, caption):
         }
         data = {
             'chat_id': chat_id,
-            'caption': caption,
-            'parse_mode': 'Markdown'
+            'caption': caption
         }
         r = requests.post(url, data=data, files=files, timeout=15)
-        return r.json().get("ok", False)
-    except Exception:
-        return False
+        res_json = r.json()
+        if res_json.get("ok"):
+            return True, "Success"
+        else:
+            return False, res_json.get("description", "Unknown Telegram Error")
+    except Exception as e:
+        return False, str(e)
+
+@app.route('/trigger-hourly')
+def trigger_manual():
+    sample_sym = "SOLUSDT"
+    flow = track_order_flow(sample_sym)
+    bid_ratio, bids_usd, asks_usd, top_bid, top_ask = analyze_institutional_depth(sample_sym)
+    klines = get_klines_data(sample_sym)
+
+    if flow and klines:
+        chart_url = generate_chart_url(sample_sym, klines, top_bid[1])
+        test_caption = (
+            f"Whale Radar Pro | تقرير السيولة المصور\n\n"
+            f"الأصل: {sample_sym} | السعر: ${flow['price']:,.2f}\n"
+            f"جدار الشراء الأقرب: ${top_bid[0]:,.0f} عند سعر ${top_bid[1]:,.2f}\n"
+            f"صافي دلتا الفوليوم: ${flow['delta']:,.0f}\n\n"
+            f"الخط المتقطع يوضح منطقة تمركز سيولة الحوت."
+        )
+        ok, reason = send_telegram_photo(PUBLIC_PROMO_CHANNEL, chart_url, test_caption)
+        return jsonify({
+            "status": "success",
+            "photo_sent": ok,
+            "telegram_error_detail": reason,
+            "chart_url": chart_url
+        })
+    return jsonify({"status": "error", "message": "Failed to fetch data or chart"}), 500
+
 
 
 def get_klines_data(symbol, interval="15m", limit=24):
