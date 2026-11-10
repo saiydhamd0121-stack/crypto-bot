@@ -11,7 +11,7 @@ app = Flask(__name__)
 # ==========================================
 # 1. إعدادات الحساب والقنوات المباشرة
 # ==========================================
-TELEGRAM_BOT_TOKEN = "8730034376:AAHnBrqKjyuICdw69mHbszrbiOMFyMcNVGo"
+TELEGRAM_BOT_TOKEN = "8730034376:AAHnBrqKjyuICdw69mHbszrbi0MFyMcNVGo"
 PUBLIC_PROMO_CHANNEL = "-1003991149946"
 VIP_CHANNEL_ID = "-1003991149946"
 
